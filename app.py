@@ -1720,23 +1720,26 @@ with tab4:
     elif exc_filter == "Con diferencia": res_df = res_df[res_df["DIFERENCIA"].abs() > 1]
     elif exc_filter == "Sin cubrir": res_df = res_df[res_df["LBS_ASIGNADAS"] < 1]
 
-    # Colorear diferencia
     def style_resumen(df):
         styles = pd.DataFrame("", index=df.index, columns=df.columns)
         if "DIFERENCIA" in df.columns:
             for i in df.index:
                 v = df.at[i,"DIFERENCIA"]
-                if v > 100:   styles.at[i,"DIFERENCIA"] = "color:#ff5252;font-weight:600"
-                elif v < -100: styles.at[i,"DIFERENCIA"] = "color:#ffd740;font-weight:600"
-                else:          styles.at[i,"DIFERENCIA"] = "color:#69f0ae"
+                # Puede ser str (ya formateado) o int/float
+                try:
+                    v_num = float(str(v).replace(",",""))
+                except (ValueError, TypeError):
+                    v_num = 0
+                if v_num > 100:    styles.at[i,"DIFERENCIA"] = "color:#ff5252;font-weight:600"
+                elif v_num < -100: styles.at[i,"DIFERENCIA"] = "color:#ffd740;font-weight:600"
+                else:              styles.at[i,"DIFERENCIA"] = "color:#69f0ae"
         if "EXCEDIDO" in df.columns:
             for i in df.index:
                 if df.at[i,"EXCEDIDO"] == "SI":
                     styles.at[i,"EXCEDIDO"] = "color:#ff5252;font-weight:700"
         return styles
 
-    res_disp = res_df.copy()
-    res_disp = fmt_lbs(res_disp, ["LBS_PLAN","LBS_ASIGNADAS","DIFERENCIA"])
+    res_disp = fmt_lbs(res_df.copy(), ["LBS_PLAN","LBS_ASIGNADAS","DIFERENCIA"])
     st.dataframe(
         res_disp.style.apply(style_resumen, axis=None),
         use_container_width=True, hide_index=True, height=350,
