@@ -1281,12 +1281,11 @@ if not run and "results" not in st.session_state:
 if run:
     log_placeholder = st.empty()
     prog_bar = st.progress(0, text="Iniciando motor...")
-    logs = []; step = 0; total_steps = 7
+    logs = []; counter = [0]; total_steps = 7
     def progress_cb(msg):
-        nonlocal step
         logs.append(msg)
-        step = min(step + 1, total_steps)
-        pct = int(step / total_steps * 100)
+        counter[0] = min(counter[0] + 1, total_steps)
+        pct = int(counter[0] / total_steps * 100)
         log_placeholder.markdown(f"```\n{msg}\n```")
         prog_bar.progress(pct, text=msg)
 
