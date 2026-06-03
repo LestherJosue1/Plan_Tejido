@@ -1783,15 +1783,18 @@ with tab5:
         for i in df.index:
             usada = df.at[i,"FUE_USADA"] if "FUE_USADA" in df.columns else "NO"
             idle  = df.at[i,"ES_IDLE"]   if "ES_IDLE"   in df.columns else "SI"
-            lbs   = float(df.at[i,"LBS_PENDIENTES_MATCH"]) if "LBS_PENDIENTES_MATCH" in df.columns else 0
+            try:
+                lbs = float(str(df.at[i,"LBS_PENDIENTES_MATCH"]).replace(",","")) if "LBS_PENDIENTES_MATCH" in df.columns else 0
+            except (ValueError, TypeError):
+                lbs = 0
             if usada == "SI" and idle == "NO":
-                c = "#69f0ae"  # verde
+                c = "#69f0ae"
             elif usada == "SI" and idle == "SI":
-                c = "#ffd740"  # amarillo (usada pero ociosa — raro)
+                c = "#ffd740"
             elif lbs > 0:
-                c = "#ffd740"  # amarillo — no usada pero tiene demanda compatible
+                c = "#ffd740"
             else:
-                c = "#ff5252"  # rojo — no usada, sin demanda
+                c = "#ff5252"
             for col in ["FUE_USADA","ES_IDLE"]:
                 if col in df.columns:
                     styles.at[i,col] = f"color:{c};font-weight:700"
