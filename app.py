@@ -960,36 +960,12 @@ def run_motor(
     prod_hours      = float(plan_full.loc[plan_full["LBS_ASIGNADAS"]>0,"HORAS_NETAS"].sum())
     n_maqs_usadas   = int(plan_full.loc[plan_full["LBS_ASIGNADAS"]>0,"MAQUINA"].nunique())
     n_maqs_total    = len(compat_info)
-    n_maqs_ociosas  = int((diag_df["ES_IDLE"]=="SI").sum())
     n_setups        = int((plan_full["HORAS_SETUP"]>0).sum())
     lbs_dem_total   = round(float(dem_plan["LBS_PLAN"].sum()))
     avg_lbs_dia     = round(total_assigned / N) if N > 0 else 0
-    # Eficiencia = horas productivas / (productivas + setup)
     total_h         = prod_hours + total_setup
     eficiencia      = round(prod_hours / total_h * 100, 1) if total_h > 0 else 0
-    # LBS promedio por máquina usada
     avg_lbs_maq     = round(total_assigned / n_maqs_usadas) if n_maqs_usadas > 0 else 0
-
-    kpi = pd.DataFrame([
-        {"KPI":"LBS_TOTALES_PLANIFICADAS",  "VALOR":total_assigned},
-        {"KPI":"LBS_PENDIENTES_RESTANTES",  "VALOR":round(lbs_pend_fin)},
-        {"KPI":"PCT_COBERTURA",             "VALOR":round(total_assigned/(total_assigned+lbs_pend_fin)*100,2) if (total_assigned+lbs_pend_fin)>0 else 0},
-        {"KPI":"HORAS_SETUP_TOTALES",       "VALOR":round(total_setup,1)},
-        {"KPI":"HORAS_PRODUCTIVAS_TOTALES", "VALOR":round(prod_hours,1)},
-        {"KPI":"EFICIENCIA_PCT",            "VALOR":eficiencia},
-        {"KPI":"N_MAQUINAS_USADAS",         "VALOR":n_maqs_usadas},
-        {"KPI":"N_MAQUINAS_OCIOSAS",        "VALOR":n_maqs_ociosas},
-        {"KPI":"N_CAMBIOS_SETUP",           "VALOR":n_setups},
-        {"KPI":"LBS_PROMEDIO_DIA",          "VALOR":avg_lbs_dia},
-        {"KPI":"LBS_PROMEDIO_MAQUINA",      "VALOR":avg_lbs_maq},
-        {"KPI":"MIN_LBS_NUEVA_MAQ_KEY_ABS", "VALOR":MIN_LBS_NUEVA_MAQ_KEY},
-        {"KPI":"MIN_LBS_NUEVA_MAQ_RATIO",   "VALOR":MIN_LBS_NUEVA_MAQ_RATIO},
-        {"KPI":"TAIL_MAX_LBS_KEY",          "VALOR":TAIL_MAX_LBS},
-        {"KPI":"MAX_SEG_DIA",               "VALOR":MAX_SEG_DIA},
-        {"KPI":"MAX_MAQ_POR_KEY",           "VALOR":MAX_MAQ_POR_KEY},
-        {"KPI":"LIMITE_MAQ_DIA",            "VALOR":"SI" if max_machines else "NO"},
-        {"KPI":"RANGO_PLAN",                "VALOR":f"{start_date.date()} → {end_date.date()}"},
-    ])
 
     _dem_pend  = dem[dem["LBS_PENDIENTES"]>1e-9].copy()
     pend_by_tt = (_dem_pend.groupby(["DTITULAR","TIPO_TEJIDO"])["LBS_PENDIENTES"]
@@ -1011,6 +987,29 @@ def run_motor(
                           "ES_IDLE":"SI" if not machine_has_any_lbs(maq) else "NO"})
     diag_df = pd.DataFrame(diag_rows).sort_values(["FUE_USADA","LBS_PENDIENTES_MATCH","DIAS_USABLES"],
                                                     ascending=[True,False,False])
+    # n_maqs_ociosas necesita diag_df — se calcula aquí
+    n_maqs_ociosas = int((diag_df["ES_IDLE"]=="SI").sum())
+
+    kpi = pd.DataFrame([
+        {"KPI":"LBS_TOTALES_PLANIFICADAS",  "VALOR":total_assigned},
+        {"KPI":"LBS_PENDIENTES_RESTANTES",  "VALOR":round(lbs_pend_fin)},
+        {"KPI":"PCT_COBERTURA",             "VALOR":round(total_assigned/(total_assigned+lbs_pend_fin)*100,2) if (total_assigned+lbs_pend_fin)>0 else 0},
+        {"KPI":"HORAS_SETUP_TOTALES",       "VALOR":round(total_setup,1)},
+        {"KPI":"HORAS_PRODUCTIVAS_TOTALES", "VALOR":round(prod_hours,1)},
+        {"KPI":"EFICIENCIA_PCT",            "VALOR":eficiencia},
+        {"KPI":"N_MAQUINAS_USADAS",         "VALOR":n_maqs_usadas},
+        {"KPI":"N_MAQUINAS_OCIOSAS",        "VALOR":n_maqs_ociosas},
+        {"KPI":"N_CAMBIOS_SETUP",           "VALOR":n_setups},
+        {"KPI":"LBS_PROMEDIO_DIA",          "VALOR":avg_lbs_dia},
+        {"KPI":"LBS_PROMEDIO_MAQUINA",      "VALOR":avg_lbs_maq},
+        {"KPI":"MIN_LBS_NUEVA_MAQ_KEY_ABS", "VALOR":MIN_LBS_NUEVA_MAQ_KEY},
+        {"KPI":"MIN_LBS_NUEVA_MAQ_RATIO",   "VALOR":MIN_LBS_NUEVA_MAQ_RATIO},
+        {"KPI":"TAIL_MAX_LBS_KEY",          "VALOR":TAIL_MAX_LBS},
+        {"KPI":"MAX_SEG_DIA",               "VALOR":MAX_SEG_DIA},
+        {"KPI":"MAX_MAQ_POR_KEY",           "VALOR":MAX_MAQ_POR_KEY},
+        {"KPI":"LIMITE_MAQ_DIA",            "VALOR":"SI" if max_machines else "NO"},
+        {"KPI":"RANGO_PLAN",                "VALOR":f"{start_date.date()} → {end_date.date()}"},
+    ])
 
     pending_keys = dem[dem["LBS_PENDIENTES"]>1e-9].copy()
     if pending_keys.empty:
