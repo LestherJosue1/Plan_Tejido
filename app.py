@@ -903,16 +903,23 @@ def run_motor(
     plan_full["MAQUINA"]   = plan_full["MAQUINA"].astype(str).str.replace(r"\.0$","",regex=True).str.zfill(4)
     plan_full["DTITULAR"]  = plan_full["DTITULAR"].astype(str).str.replace(r"\.0$","",regex=True)
     plan_full["LOTE_HILO"] = plan_full["LOTE_HILO"].astype(str)
+    # Redondear LBS a enteros
+    plan_full["LBS_ASIGNADAS"] = plan_full["LBS_ASIGNADAS"].round(0).astype(int)
+    plan_full["HORAS_SETUP"]   = plan_full["HORAS_SETUP"].round(1)
+    plan_full["HORAS_NETAS"]   = plan_full["HORAS_NETAS"].round(1)
+    plan_full["RATE_LBS_DIA"]  = plan_full["RATE_LBS_DIA"].round(0).astype(int)
     plan_full = plan_full.sort_values(["MAQUINA","SEQ_MAQUINA","FECHA","DIA"]).reset_index(drop=True)
 
     resumen_asig = (plan_full[plan_full["LBS_ASIGNADAS"]>0]
                     .groupby(["ESTILO_OPTIMO","LOTE_HILO","DTITULAR","TIPO_TEJIDO"],dropna=False)["LBS_ASIGNADAS"]
                     .sum().reset_index())
     resumen = dem_plan.merge(resumen_asig, on=["ESTILO_OPTIMO","LOTE_HILO","DTITULAR","TIPO_TEJIDO"], how="outer")
-    resumen["LBS_PLAN"]      = pd.to_numeric(resumen["LBS_PLAN"],      errors="coerce").fillna(0.0)
-    resumen["LBS_ASIGNADAS"] = pd.to_numeric(resumen["LBS_ASIGNADAS"], errors="coerce").fillna(0.0)
-    resumen["DIFERENCIA"]    = resumen["LBS_PLAN"] - resumen["LBS_ASIGNADAS"]
+    resumen["LBS_PLAN"]      = pd.to_numeric(resumen["LBS_PLAN"],      errors="coerce").fillna(0.0).round(0).astype(int)
+    resumen["LBS_ASIGNADAS"] = pd.to_numeric(resumen["LBS_ASIGNADAS"], errors="coerce").fillna(0.0).round(0).astype(int)
+    resumen["DIFERENCIA"]    = (resumen["LBS_PLAN"] - resumen["LBS_ASIGNADAS"]).round(0).astype(int)
     resumen["EXCEDIDO"]      = np.where(resumen["LBS_ASIGNADAS"] > resumen["LBS_PLAN"]+1e-6,"SI","NO")
+    resumen["PCT_CUBIERTO"]  = np.where(resumen["LBS_PLAN"]>0,
+                                         (resumen["LBS_ASIGNADAS"]/resumen["LBS_PLAN"]*100).round(1), 0.0)
     resumen = resumen.sort_values(["EXCEDIDO","LBS_ASIGNADAS"], ascending=[False,False])
 
     md_rows = []
@@ -923,7 +930,7 @@ def run_motor(
         md_rows.append({"FECHA":dt.date(),"DIA":di+1,
                         "MAQUINAS_ACTIVAS":len(maqs_motor|maqs_pre),
                         "MAQUINAS_MOTOR":len(maqs_motor),"MAQUINAS_PREPLAN":len(maqs_pre),
-                        "LBS_TOTALES":float(day_plan["LBS_ASIGNADAS"].sum()),
+                        "LBS_TOTALES":round(float(day_plan["LBS_ASIGNADAS"].sum())),
                         "HORAS_SETUP_TOTALES":float(day_plan["HORAS_SETUP"].sum())})
     machines_day_df = pd.DataFrame(md_rows)
 
@@ -948,16 +955,33 @@ def run_motor(
     pivot_plan["Total_general"] = pivot_plan[date_cols].sum(axis=1)
     pivot_plan = pivot_plan.rename(columns={c: c.strftime("%Y-%m-%d") for c in date_cols}).reset_index(drop=True)
 
-    total_assigned = float(plan_full["LBS_ASIGNADAS"].sum())
-    total_setup    = float(plan_full["HORAS_SETUP"].sum())
-    prod_hours     = float(plan_full.loc[plan_full["LBS_ASIGNADAS"]>0,"HORAS_NETAS"].sum())
+    total_assigned  = round(float(plan_full["LBS_ASIGNADAS"].sum()))
+    total_setup     = float(plan_full["HORAS_SETUP"].sum())
+    prod_hours      = float(plan_full.loc[plan_full["LBS_ASIGNADAS"]>0,"HORAS_NETAS"].sum())
+    n_maqs_usadas   = int(plan_full.loc[plan_full["LBS_ASIGNADAS"]>0,"MAQUINA"].nunique())
+    n_maqs_total    = len(compat_info)
+    n_maqs_ociosas  = int((diag_df["ES_IDLE"]=="SI").sum())
+    n_setups        = int((plan_full["HORAS_SETUP"]>0).sum())
+    lbs_dem_total   = round(float(dem_plan["LBS_PLAN"].sum()))
+    avg_lbs_dia     = round(total_assigned / N) if N > 0 else 0
+    # Eficiencia = horas productivas / (productivas + setup)
+    total_h         = prod_hours + total_setup
+    eficiencia      = round(prod_hours / total_h * 100, 1) if total_h > 0 else 0
+    # LBS promedio por máquina usada
+    avg_lbs_maq     = round(total_assigned / n_maqs_usadas) if n_maqs_usadas > 0 else 0
 
     kpi = pd.DataFrame([
         {"KPI":"LBS_TOTALES_PLANIFICADAS",  "VALOR":total_assigned},
-        {"KPI":"LBS_PENDIENTES_RESTANTES",  "VALOR":lbs_pend_fin},
+        {"KPI":"LBS_PENDIENTES_RESTANTES",  "VALOR":round(lbs_pend_fin)},
         {"KPI":"PCT_COBERTURA",             "VALOR":round(total_assigned/(total_assigned+lbs_pend_fin)*100,2) if (total_assigned+lbs_pend_fin)>0 else 0},
-        {"KPI":"HORAS_SETUP_TOTALES",       "VALOR":total_setup},
-        {"KPI":"HORAS_PRODUCTIVAS_TOTALES", "VALOR":prod_hours},
+        {"KPI":"HORAS_SETUP_TOTALES",       "VALOR":round(total_setup,1)},
+        {"KPI":"HORAS_PRODUCTIVAS_TOTALES", "VALOR":round(prod_hours,1)},
+        {"KPI":"EFICIENCIA_PCT",            "VALOR":eficiencia},
+        {"KPI":"N_MAQUINAS_USADAS",         "VALOR":n_maqs_usadas},
+        {"KPI":"N_MAQUINAS_OCIOSAS",        "VALOR":n_maqs_ociosas},
+        {"KPI":"N_CAMBIOS_SETUP",           "VALOR":n_setups},
+        {"KPI":"LBS_PROMEDIO_DIA",          "VALOR":avg_lbs_dia},
+        {"KPI":"LBS_PROMEDIO_MAQUINA",      "VALOR":avg_lbs_maq},
         {"KPI":"MIN_LBS_NUEVA_MAQ_KEY_ABS", "VALOR":MIN_LBS_NUEVA_MAQ_KEY},
         {"KPI":"MIN_LBS_NUEVA_MAQ_RATIO",   "VALOR":MIN_LBS_NUEVA_MAQ_RATIO},
         {"KPI":"TAIL_MAX_LBS_KEY",          "VALOR":TAIL_MAX_LBS},
@@ -979,7 +1003,7 @@ def run_motor(
         pend = pend_by_tt.copy()
         if tit_fix:                pend = pend[pend["DTITULAR"]==tit_fix]
         if tej_allow != ["(ALL)"]: pend = pend[pend["TIPO_TEJIDO"].isin(set(tej_allow))]
-        lbs_match = float(pend["LBS_PEND"].sum()) if not pend.empty else 0.0
+        lbs_match = round(float(pend["LBS_PEND"].sum())) if not pend.empty else 0
         diag_rows.append({"MAQUINA":maq,"DTITULAR_FIJO":tit_fix,
                           "TIPOS_TEJIDO_PERMITIDOS":", ".join(tej_allow),
                           "DIAS_USABLES":usable_days,"LBS_PENDIENTES_MATCH":lbs_match,
@@ -1004,22 +1028,33 @@ def run_motor(
                     if earliest_free_day(maq) is not None: elig_free.append(maq)
             dd_rows.append({"ESTILO_OPTIMO":rr["ESTILO_OPTIMO"],"LOTE_HILO":rr["LOTE_HILO"],
                             "DTITULAR":rr["DTITULAR"],"TIPO_TEJIDO":rr["TIPO_TEJIDO"],
-                            "LBS_PENDIENTES":float(rr["LBS_PENDIENTES"]),
+                            "LBS_PENDIENTES":round(float(rr["LBS_PENDIENTES"])),
                             "MAQS_COMPAT":len(elig),"MAQS_CON_DIA_LIBRE":len(elig_free),
                             "MAQS_EJEMPLO":", ".join(elig_free[:20])})
         dem_diag = pd.DataFrame(dd_rows)
 
     return {
-        "plan_full":      plan_full,
-        "pivot_plan":     pivot_plan,
-        "resumen":        resumen,
-        "machines_day":   machines_day_df,
-        "kpi":            kpi,
-        "diag_maquinas":  diag_df,
-        "diag_demanda":   dem_diag,
-        "total_assigned": total_assigned,
-        "lbs_pend_fin":   lbs_pend_fin,
-        "cobertura":      round(total_assigned/(total_assigned+lbs_pend_fin)*100,1) if (total_assigned+lbs_pend_fin)>0 else 0,
+        "plan_full":       plan_full,
+        "pivot_plan":      pivot_plan,
+        "resumen":         resumen,
+        "machines_day":    machines_day_df,
+        "kpi":             kpi,
+        "diag_maquinas":   diag_df,
+        "diag_demanda":    dem_diag,
+        "total_assigned":  total_assigned,
+        "lbs_pend_fin":    round(lbs_pend_fin),
+        "lbs_dem_total":   lbs_dem_total,
+        "cobertura":       round(total_assigned/(total_assigned+lbs_pend_fin)*100,1) if (total_assigned+lbs_pend_fin)>0 else 0,
+        "eficiencia":      eficiencia,
+        "n_maqs_usadas":   n_maqs_usadas,
+        "n_maqs_total":    n_maqs_total,
+        "n_maqs_ociosas":  n_maqs_ociosas,
+        "n_setups":        n_setups,
+        "avg_lbs_dia":     avg_lbs_dia,
+        "avg_lbs_maq":     avg_lbs_maq,
+        "total_setup":     round(total_setup,1),
+        "prod_hours":      round(prod_hours,1),
+        "horizonte_dias":  N,
     }
 
 
@@ -1065,6 +1100,15 @@ def build_excel(results):
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+# ── Formateador de números con separador de miles ──
+def fmt_lbs(df, cols):
+    """Aplica formato {:,} a columnas numéricas de LBS para mostrar en tablas."""
+    df = df.copy()
+    for c in cols:
+        if c in df.columns:
+            df[c] = df[c].apply(lambda x: f"{int(round(x)):,}" if pd.notnull(x) and x != "" else x)
+    return df
 
 # ── CSS personalizado ──
 st.markdown("""
@@ -1320,32 +1364,61 @@ def kv(name):
 plan_full = results["plan_full"]
 plan_prod = plan_full[plan_full["LBS_ASIGNADAS"]>0]
 
-# ── KPI Cards (HTML) ──
+# ── Fila 1 de KPIs — producción ──
 st.divider()
-cov = results["cobertura"]
-cov_color = "#69f0ae" if cov >= 90 else "#ffd740" if cov >= 70 else "#ff5252"
+st.markdown("#### 📊 Indicadores del Plan")
+c1, c2, c3, c4, c5 = st.columns(5)
+cov        = results["cobertura"]
+cov_color  = "#69f0ae" if cov >= 90 else "#ffd740" if cov >= 70 else "#ff5252"
 total_lbs  = results["total_assigned"]
 pend_lbs   = results["lbs_pend_fin"]
-h_setup    = kv("HORAS_SETUP_TOTALES")
-h_prod     = kv("HORAS_PRODUCTIVAS_TOTALES")
-n_maq_used = plan_prod["MAQUINA"].nunique()
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-cards = [
-    (c1, "LBS Planificadas",   f"{total_lbs:,.0f}",   f"de {total_lbs+pend_lbs:,.0f} totales", ""),
-    (c2, "LBS Pendientes",     f"{pend_lbs:,.0f}",    "sin cubrir",                              ""),
-    (c3, "Cobertura",          f"{cov}%",             "del total",                               "kpi-coverage"),
-    (c4, "Horas Setup",        f"{h_setup:,.0f}",     "horas de cambio",                         ""),
-    (c5, "Horas Productivas",  f"{h_prod:,.0f}",      "horas de producción",                     ""),
-    (c6, "Máquinas Usadas",    f"{n_maq_used}",       "con producción",                          ""),
+cards_row1 = [
+    (c1, "LBS Planificadas",  f"{total_lbs:,}",         f"de {results['lbs_dem_total']:,} demandadas", ""),
+    (c2, "LBS Pendientes",    f"{pend_lbs:,}",           "sin cubrir",                                  ""),
+    (c3, "Cobertura",         f"{cov}%",                 "del total demandado",                         "kpi-coverage"),
+    (c4, "LBS / Día (prom)",  f"{results['avg_lbs_dia']:,}", f"en {results['horizonte_dias']} días",   ""),
+    (c5, "LBS / Máquina",     f"{results['avg_lbs_maq']:,}", "promedio por máquina activa",             ""),
 ]
-for col, label, val, sub, extra_cls in cards:
+for col, label, val, sub, cls in cards_row1:
     with col:
         st.markdown(f"""
-        <div class="kpi-card {extra_cls}">
+        <div class="kpi-card {cls}">
             <div class="kpi-label">{label}</div>
-            <div class="kpi-value" style="{'color:'+cov_color if extra_cls else ''}">{val}</div>
+            <div class="kpi-value" style="{'color:'+cov_color if cls else ''}">{val}</div>
             <div class="kpi-sub">{sub}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ── Fila 2 de KPIs — eficiencia y máquinas ──
+d1, d2, d3, d4, d5 = st.columns(5)
+efic       = results["eficiencia"]
+efic_color = "#69f0ae" if efic >= 85 else "#ffd740" if efic >= 70 else "#ff5252"
+n_used     = results["n_maqs_usadas"]
+n_total    = results["n_maqs_total"]
+n_idle     = results["n_maqs_ociosas"]
+util_maq   = round(n_used / n_total * 100, 1) if n_total > 0 else 0
+util_color = "#69f0ae" if util_maq >= 80 else "#ffd740" if util_maq >= 60 else "#ff5252"
+
+cards_row2 = [
+    (d1, "Eficiencia",        f"{efic}%",               "hrs productivas / total",                     ""),
+    (d2, "Horas Productivas", f"{results['prod_hours']:,.0f}", "horas de producción",                  ""),
+    (d3, "Horas de Setup",    f"{results['total_setup']:,.0f}", "horas de cambio",                     ""),
+    (d4, "Máquinas Usadas",   f"{n_used} / {n_total}",  f"{util_maq}% utilización",                    ""),
+    (d5, "N° Cambios Setup",  f"{results['n_setups']:,}", f"{n_idle} máquinas ociosas",                ""),
+]
+for col, label, val, sub, cls in cards_row2:
+    with col:
+        # Color especial para eficiencia y utilización
+        v_color = efic_color if label == "Eficiencia" else util_color if label == "Máquinas Usadas" else ""
+        idle_warn = f'style="color:{util_color}"' if label == "N° Cambios Setup" and n_idle > 0 else ""
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-value" style="{'color:'+v_color if v_color else ''}">{val}</div>
+            <div class="kpi-sub" {idle_warn}>{sub}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1519,6 +1592,7 @@ with tab1:
                  "LOTE_HILO","DTITULAR","DGREAL","TIPO_TEJIDO","YARN","COLOR",
                  "LBS_ASIGNADAS","HORAS_SETUP","HORAS_NETAS","RATE_LBS_DIA","SETUP_TIPO"]
     df_disp = df_show[[c for c in cols_show if c in df_show.columns]].copy()
+    df_disp = fmt_lbs(df_disp, ["LBS_ASIGNADAS","RATE_LBS_DIA"])
 
     st.dataframe(
         df_disp.style.apply(style_plan, axis=None),
@@ -1662,8 +1736,10 @@ with tab4:
                     styles.at[i,"EXCEDIDO"] = "color:#ff5252;font-weight:700"
         return styles
 
+    res_disp = res_df.copy()
+    res_disp = fmt_lbs(res_disp, ["LBS_PLAN","LBS_ASIGNADAS","DIFERENCIA"])
     st.dataframe(
-        res_df.style.apply(style_resumen, axis=None),
+        res_disp.style.apply(style_resumen, axis=None),
         use_container_width=True, hide_index=True, height=350,
     )
 
@@ -1719,8 +1795,9 @@ with tab5:
                     styles.at[i,col] = f"color:{c};font-weight:700"
         return styles
 
+    dm_disp = fmt_lbs(dm.copy(), ["LBS_PENDIENTES_MATCH"])
     st.dataframe(
-        dm.style.apply(style_diag, axis=None),
+        dm_disp.style.apply(style_diag, axis=None),
         use_container_width=True, hide_index=True, height=450,
     )
 
@@ -1760,8 +1837,9 @@ with tab6:
                     styles.at[i,"MAQS_COMPAT"]     = f"color:{c};font-weight:600"
                     styles.at[i,"MAQS_CON_DIA_LIBRE"] = f"color:{c};font-weight:600"
             return styles
+        dd_disp = fmt_lbs(dd.copy(), ["LBS_PENDIENTES"])
         st.dataframe(
-            dd.style.apply(style_demanda, axis=None),
+            dd_disp.style.apply(style_demanda, axis=None),
             use_container_width=True, hide_index=True, height=400,
         )
         # Gráfico top pendientes
