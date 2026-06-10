@@ -881,7 +881,7 @@ def run_motor(
                 if float(seg.get("LBS_ASIGNADAS",0.0)) > 1e-9: return True
         return False
 
-    def best_pending_for_machine(maq):
+    def best_pending_for_machine(maq, ignore_umbral=False):
         info = compat_info[maq]
         tit_fix = norm_intlike(info.get("titular",""))
         allowed = info.get("allowed", set())
@@ -893,7 +893,16 @@ def run_motor(
         cand = cand.sort_values(by=["_DUEB","_DUED","PRIO_NUM","LBS_PENDIENTES"], ascending=[True,True,False,False])
         for idx in cand.index.tolist():
             r = dem.loc[idx]
-            if machine_can(maq, r["ESTILO_OPTIMO"], r["DTITULAR"], r["TIPO_TEJIDO"], r["LOTE_HILO"]): return idx
+            if not machine_can(maq, r["ESTILO_OPTIMO"], r["DTITULAR"], r["TIPO_TEJIDO"], r["LOTE_HILO"]): continue
+            if not ignore_umbral:
+                # Aplicar umbral solo si la máquina no tiene historial previo
+                keyk = (r["ESTILO_OPTIMO"], r["LOTE_HILO"], r["DTITULAR"], r["TIPO_TEJIDO"])
+                total_key_lbs = key_total_lbs.get(keyk, float(r["LBS_PENDIENTES"]))
+                umbral = min_lbs_nueva_maquina(total_key_lbs)
+                maqs_ya = machines_used_for_key({"ESTILO_OPTIMO":keyk[0],"LOTE_HILO":keyk[1],
+                                                  "DTITULAR":keyk[2],"TIPO_TEJIDO":keyk[3]})
+                if maq not in maqs_ya and float(r["LBS_PENDIENTES"]) < umbral: continue
+            return idx
         return None
 
     passes = 0
@@ -904,7 +913,9 @@ def run_motor(
         if not (dem["LBS_PENDIENTES"] > 1e-9).any(): break
         changed = False
         for maq in idle_machines:
-            si = earliest_free_day(maq); idx = best_pending_for_machine(maq)
+            si = earliest_free_day(maq)
+            # Máquinas ociosas sin historial: aplicar umbral normal
+            idx = best_pending_for_machine(maq, ignore_umbral=False)
             if si is None or idx is None: continue
             before = float(dem.at[idx,"LBS_PENDIENTES"])
             assign_primary_block(maq, idx, si)
@@ -914,16 +925,19 @@ def run_motor(
 
     # FASE 3.5 — máquinas con heredado terminado que tienen días libres al final
     # Ej: 0054 corrió 22ACJ90 días 1-5, quedó libre días 6-7 → asignar demanda pendiente
-    # La Fase 1 no las alcanza porque su earliest_free_day es tardío y el umbral
-    # ya bloqueó su apertura; la Fase 3 las ignora porque no son 100% ociosas.
+    # Ej: 0057 bloqueada días 1-3, libre días 4-7, sin asignación del motor todavía
+    # ── ignore_umbral=True: estas máquinas ya estaban activas, no son "nuevas",
+    # el umbral no debe impedirles absorber demanda residual. ──
     log("⚙️ Fase 3.5: días libres post-heredado...")
     if (dem["LBS_PENDIENTES"] > 1e-9).any():
         for maq in sorted(schedule.keys()):
             si = earliest_free_day(maq)
             if si is None: continue
-            # Solo máquinas que ya tienen algo asignado pero aún tienen días libres
-            if not machine_has_any_lbs(maq): continue
-            idx = best_pending_for_machine(maq)
+            # Aplica a máquinas que ya tienen heredado/asignado Y a máquinas
+            # que estuvieron bloqueadas por preplan y ahora tienen días libres
+            had_preplan = any(maq in preplan_active_day[di] for di in range(N))
+            if not machine_has_any_lbs(maq) and not had_preplan: continue
+            idx = best_pending_for_machine(maq, ignore_umbral=True)
             if idx is None: continue
             assign_primary_block(maq, idx, si)
 
@@ -1351,11 +1365,32 @@ if uploaded is None:
 # ── Cargar hojas ──
 @st.cache_data(show_spinner="Cargando hojas del Excel...")
 def load_sheets(file_bytes):
-    xls = io.BytesIO(file_bytes)
-    def rt(sheet):   return pd.read_excel(xls, sheet_name=sheet, header=1)
+    # ── data_only=True: obtiene valores calculados en celdas con fórmulas
+    # (ej. YARN en DEMANDA que usa =PARAMETROS!$C$4, o columnas calculadas
+    # en COMPAT_MAQUINA). Sin esto openpyxl devuelve el string de la fórmula. ──
+    raw = io.BytesIO(file_bytes)
+    xls = io.BytesIO(file_bytes)   # para pd.read_excel (no soporta data_only)
+
+    def _sheet_to_df(sheet_name, header_row=1):
+        """Lee una hoja usando openpyxl data_only=True y la convierte a DataFrame."""
+        wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+        if sheet_name not in wb.sheetnames:
+            raise KeyError(sheet_name)
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows(values_only=True))
+        if len(rows) <= header_row:
+            return pd.DataFrame()
+        headers = [str(c) if c is not None else f"_col{i}" for i, c in enumerate(rows[header_row])]
+        data = rows[header_row + 1:]
+        return pd.DataFrame(data, columns=headers)
+
+    def rt(sheet):
+        return _sheet_to_df(sheet, header_row=1)
+
     def ro(sheet, cols):
-        try:    return pd.read_excel(xls, sheet_name=sheet, header=1)
+        try:    return _sheet_to_df(sheet, header_row=1)
         except: return pd.DataFrame(columns=cols)
+
     return {
         "params":   rt("PARAMETROS"),
         "reglas":   rt("REGLAS"),
