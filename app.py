@@ -900,6 +900,21 @@ def run_motor(
             if after < before - 1e-9: changed = True
         if not changed: break
 
+    # FASE 3.5 — máquinas con heredado terminado que tienen días libres al final
+    # Ej: 0054 corrió 22ACJ90 días 1-5, quedó libre días 6-7 → asignar demanda pendiente
+    # La Fase 1 no las alcanza porque su earliest_free_day es tardío y el umbral
+    # ya bloqueó su apertura; la Fase 3 las ignora porque no son 100% ociosas.
+    log("⚙️ Fase 3.5: días libres post-heredado...")
+    if (dem["LBS_PENDIENTES"] > 1e-9).any():
+        for maq in sorted(schedule.keys()):
+            si = earliest_free_day(maq)
+            if si is None: continue
+            # Solo máquinas que ya tienen algo asignado pero aún tienen días libres
+            if not machine_has_any_lbs(maq): continue
+            idx = best_pending_for_machine(maq)
+            if idx is None: continue
+            assign_primary_block(maq, idx, si)
+
     lbs_pend_fin = float(dem["LBS_PENDIENTES"].sum())
     log(f"✅ Motor finalizado. LBS pendientes: {lbs_pend_fin:,.0f}")
 
@@ -1925,10 +1940,12 @@ with col_dl1:
 with col_dl2:
     with st.spinner("Preparando Excel..."):
         excel_bytes = build_excel(results)
+    _ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    _fname = f"PLAN_TEJIDO_{_ts}.xlsx"
     st.download_button(
-        label="📥 Descargar PLAN_TEJIDO_v3.xlsx",
+        label=f"📥 Descargar {_fname}",
         data=excel_bytes,
-        file_name="PLAN_TEJIDO_v3.xlsx",
+        file_name=_fname,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
         use_container_width=True,
