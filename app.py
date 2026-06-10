@@ -717,9 +717,6 @@ def run_motor(
                 remaining = float(dem.at[idx,"LBS_PENDIENTES"]); candidates = []
                 for maq in schedule.keys():
                     open_new = maq not in used
-                    if open_new:
-                        if len(used) >= MAX_MAQ_POR_KEY: continue
-                        if remaining < umbral_nueva_maq: continue
                     si = earliest_free_day(maq)
                     if si is None: continue
                     if not machine_can(maq, drow["ESTILO_OPTIMO"], drow["DTITULAR"], drow["TIPO_TEJIDO"], drow["LOTE_HILO"]): continue
@@ -735,6 +732,17 @@ def run_motor(
                         rt_v,_,_ = rate_lookup(maq, keydict_c["ESTILO_OPTIMO"], keydict_c["DTITULAR"],
                                                keydict_c["TIPO_TEJIDO"], keydict_c["LOTE_HILO"])
                         total_cap += rt_v * (hn / local_h); first_c = False; i += 1
+                    if open_new:
+                        if len(used) >= MAX_MAQ_POR_KEY: continue
+                        # ── CORRECCIÓN: umbral basado en capacidad real de esta
+                        # máquina en sus días libres, no en lbs globales del key.
+                        # Abre la máquina si puede producir al menos min_lbs Y
+                        # las lbs pendientes superan lo que ella puede absorber
+                        # (evita abrir máquinas para producciones insignificantes)
+                        # pero no bloquea por el umbral global cuando hay días
+                        # libres disponibles con demanda real pendiente. ──
+                        if total_cap < min_lbs: continue
+                        if remaining < min(total_cap, umbral_nueva_maq): continue
                     prev0 = prev_last_key_before_day(maq, si)
                     sh0, _ = penalty(prev0, keydict_c)
                     usedflag = 1 if maq in used else 0
