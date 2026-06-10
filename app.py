@@ -499,8 +499,14 @@ def run_motor(
         if prev_est in ("","DISPONIBLE"): return 0.0, "INICIO"
         ptj = norm_text(prevk.get("TIPO_TEJIDO","")); ntj = norm_text(newk.get("TIPO_TEJIDO",""))
         if ptj and ntj and ptj != ntj: return float(pen_tejido), "CAMBIO_TEJIDO"
+        # ── Si mismo YARN y mismo LOTE_HILO → misma composición física del hilo,
+        # no hay setup aunque el ESTILO_OPTIMO sea diferente. ──
+        prev_yarn = norm_text(prevk.get("YARN",""));  new_yarn = norm_text(newk.get("YARN",""))
+        prev_lote = lot_norm(prevk.get("LOTE_HILO","")); new_lote = lot_norm(newk.get("LOTE_HILO",""))
+        if prev_yarn and new_yarn and prev_yarn == new_yarn and prev_lote == new_lote:
+            return 0.0, "CONTINUIDAD"
         if prev_est != norm_text(newk.get("ESTILO_OPTIMO","")): return float(pen_estilo), "CAMBIO_ESTILO"
-        if lot_norm(prevk.get("LOTE_HILO","")) != lot_norm(newk.get("LOTE_HILO","")): return float(pen_lote), "CAMBIO_LOTE"
+        if prev_lote != new_lote: return float(pen_lote), "CAMBIO_LOTE"
         return 0.0, "CONTINUIDAD"
 
     def day_used_hours(maq, di):
@@ -628,7 +634,13 @@ def run_motor(
             sh, st = penalty(prev, keydict)
             if not permitir_setup and sh > 0: break
             horas_netas = max(0.0, local_h - sh)
-            if horas_netas <= 0: break
+            # ── Si el setup no cabe en este día pero es el primer día y hay
+            # días siguientes disponibles, saltar al siguiente en vez de abortar.
+            # Ej: 0128 tiene solo 2.52h en día 1 pero 24h en días 2-7. ──
+            if horas_netas <= 0:
+                if first and i + 1 < N and len(schedule[maq][i+1]) == 0 and can_use_day(maq, i+1):
+                    i += 1; continue
+                break
             rate, _, _ = rate_lookup(maq, keydict["ESTILO_OPTIMO"], keydict["DTITULAR"],
                                      keydict["TIPO_TEJIDO"], keydict["LOTE_HILO"])
             cap = rate * (horas_netas / local_h)
