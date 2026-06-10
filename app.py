@@ -578,11 +578,19 @@ def run_motor(
         return None
 
     def machines_used_for_key(keydict):
+        """Retorna solo máquinas que el MOTOR asignó en el plan nuevo.
+        Excluye días que son 100% preplan heredado (bloqueados sin segmentos
+        propios del motor) para evitar doble conteo con el estado anterior."""
         ms = set()
         eo=keydict["ESTILO_OPTIMO"]; lo=keydict["LOTE_HILO"]
         dt=keydict["DTITULAR"];      tj=keydict["TIPO_TEJIDO"]
         for maq in schedule.keys():
             for di in range(N):
+                # Ignorar días que son exclusivamente preplan heredado
+                # (la máquina está en preplan_active_day pero el motor
+                # no generó ningún segmento propio para ese día)
+                if maq in preplan_active_day[di] and len(schedule[maq][di]) == 0:
+                    continue
                 for seg in schedule[maq][di]:
                     if (seg["ESTILO_OPTIMO"],seg["LOTE_HILO"],seg["DTITULAR"],seg["TIPO_TEJIDO"])==(eo,lo,dt,tj):
                         if float(seg["LBS_ASIGNADAS"]) > 1e-9:
@@ -631,6 +639,32 @@ def run_motor(
             dem.at[idx, "LBS_PENDIENTES"] = max(0.0, float(dem.at[idx,"LBS_PENDIENTES"]) - lbs)
             first = False; i += 1
         return float(dem.at[idx, "LBS_PENDIENTES"])
+
+    # PRE-FASE 0: descontar lbs que ya están comprometidas por el estado heredado
+    # Esto evita que la demanda quede inflada cuando una máquina viene corriendo
+    # el mismo key del plan anterior (evita doble conteo en cobertura y en
+    # la lógica de apertura de nuevas máquinas).
+    log("⚙️ Pre-fase 0: descontando lbs heredadas...")
+    for _, r in estado.iterrows():
+        maq = r["MAQUINA"]
+        if not maq or maq not in compat_info: continue
+        eo  = norm_text(r.get("ESTILO_OPTIMO", ""))
+        lo  = lot_norm(r.get("LOTE_HILO", ""))
+        dt  = norm_intlike(r.get("DTITULAR", ""))
+        tj  = norm_text(r.get("TIPO_TEJIDO", ""))
+        if eo in ("", "DISPONIBLE"): continue
+        rate_her  = float(r.get("RATE_APROBADO") or 0)
+        horas_her = float(r.get("HORAS_LIBRES_REF") or 0)
+        if rate_her <= 0 or horas_her <= 0: continue
+        # Lbs que esta máquina producirá terminando el trabajo heredado
+        lbs_heredadas = rate_her * (horas_her / hours_day)
+        k = dkey(eo, lo, dt, tj)
+        idxs = key_to_idxs.get(k, [])
+        if not idxs: continue
+        idx = idxs[0]
+        dem.at[idx, "LBS_PENDIENTES"] = max(
+            0.0, float(dem.at[idx, "LBS_PENDIENTES"]) - lbs_heredadas
+        )
 
     # FASE 0
     log("⚙️ Fase 0: continuidad heredada...")
