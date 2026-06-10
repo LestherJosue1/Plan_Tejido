@@ -891,17 +891,43 @@ def run_motor(
         if allowed:       cand = cand[cand["TIPO_TEJIDO"].isin(allowed)]
         if cand.empty: return None
         cand = cand.sort_values(by=["_DUEB","_DUED","PRIO_NUM","LBS_PENDIENTES"], ascending=[True,True,False,False])
+        si = earliest_free_day(maq)
         for idx in cand.index.tolist():
             r = dem.loc[idx]
             if not machine_can(maq, r["ESTILO_OPTIMO"], r["DTITULAR"], r["TIPO_TEJIDO"], r["LOTE_HILO"]): continue
             if not ignore_umbral:
-                # Aplicar umbral solo si la máquina no tiene historial previo
                 keyk = (r["ESTILO_OPTIMO"], r["LOTE_HILO"], r["DTITULAR"], r["TIPO_TEJIDO"])
                 total_key_lbs = key_total_lbs.get(keyk, float(r["LBS_PENDIENTES"]))
                 umbral = min_lbs_nueva_maquina(total_key_lbs)
                 maqs_ya = machines_used_for_key({"ESTILO_OPTIMO":keyk[0],"LOTE_HILO":keyk[1],
                                                   "DTITULAR":keyk[2],"TIPO_TEJIDO":keyk[3]})
                 if maq not in maqs_ya and float(r["LBS_PENDIENTES"]) < umbral: continue
+            # ── Verificar que el key realmente puede producir al menos min_lbs
+            # en algún día disponible de esta máquina. Si el setup del primer día
+            # deja tan pocas horas que no alcanza min_lbs, probar el siguiente key
+            # en lugar de retornar uno que assign_primary_block va a descartar. ──
+            if si is not None:
+                keydict_test = _make_keydict(r, maq)
+                viable = False
+                for di_test in range(si, min(si + 3, N)):  # revisar hasta 3 días adelante
+                    if not can_use_day(maq, di_test): continue
+                    if len(schedule[maq][di_test]) != 0: continue
+                    local_h_test = hours_avail(maq, di_test)
+                    prev_test = prev_last_key_before_day(maq, di_test)
+                    sh_test, _ = penalty(prev_test, keydict_test)
+                    hn_test = max(0.0, local_h_test - sh_test)
+                    if hn_test <= 0:
+                        # Si no cabe el setup hoy pero el día siguiente tiene 24h, sí es viable
+                        if di_test + 1 < N and can_use_day(maq, di_test + 1) and hours_avail(maq, di_test + 1) >= sh_test:
+                            viable = True; break
+                        continue
+                    rate_test, _, _ = rate_lookup(maq, keydict_test["ESTILO_OPTIMO"],
+                                                   keydict_test["DTITULAR"], keydict_test["TIPO_TEJIDO"],
+                                                   keydict_test["LOTE_HILO"])
+                    cap_test = rate_test * (hn_test / local_h_test)
+                    if cap_test >= min_lbs:
+                        viable = True; break
+                if not viable: continue
             return idx
         return None
 
