@@ -111,7 +111,6 @@ def calcular_continuidad(plan_df):
 
     for maq, g in plan_df.groupby("MAQUINA"):
 
-        activo_prev = False
         estilo_prev = None
 
         for _, r in g.iterrows():
@@ -119,20 +118,13 @@ def calcular_continuidad(plan_df):
             cont = False
 
             if r["PLAN_NUEVO_LBS"] > 0:
-
                 if estilo_prev == r["ESTILO_NUEVO"]:
                     cont = True
-
                 estilo_prev = r["ESTILO_NUEVO"]
-                activo_prev = True
 
             elif str(r["PLAN_ANTERIOR_ESTILO"]).strip() != "":
                 cont = True
                 estilo_prev = r["PLAN_ANTERIOR_ESTILO"]
-                activo_prev = True
-
-            else:
-                activo_prev = False
 
             continuidad.append(cont)
 
@@ -153,7 +145,7 @@ def calcular_activa(plan_df):
     return plan_df
 
 # ============================================================
-# TIPO DIA
+# TIPO DIA (FINAL)
 # ============================================================
 
 def clasificar_dia(plan_df):
@@ -161,42 +153,22 @@ def clasificar_dia(plan_df):
     def tipo(r):
 
         if r["PLAN_NUEVO_LBS"] > 0:
-            return "PRODUCCION"
+            return "🟢 PRODUCCION"
 
         elif str(r["PLAN_ANTERIOR_ESTILO"]).strip() != "":
-            return "CONTINUIDAD"
+            return "🔵 CONTINUIDAD"
 
         else:
-            return "OCIOSO"
+            return "⚪ OCIOSO"
 
     plan_df["TIPO_DIA"] = plan_df.apply(tipo, axis=1)
     return plan_df
 
 # ============================================================
-# VISUAL MEJORADO
-# ============================================================
-
-def tipo_visual(tipo):
-    if tipo == "PRODUCCION":
-        return "🟢 PRODUCCION"
-    elif tipo == "CONTINUIDAD":
-        return "🔵 CONTINUIDAD"
-    else:
-        return "⚪ OCIOSO"
-
-def color_tipo(val):
-    if val == "PRODUCCION":
-        return "background-color: #90EE90"
-    elif val == "CONTINUIDAD":
-        return "background-color: #ADD8E6"
-    else:
-        return "background-color: #D3D3D3"
-
-# ============================================================
 # APP
 # ============================================================
 
-st.title("🧵 Plan Tejido v5 PRO")
+st.title("🧵 Plan Tejido v5 PRO (Estable)")
 
 uploaded = st.file_uploader("Sube archivo Excel", type=["xlsx"])
 
@@ -228,8 +200,6 @@ if uploaded:
     plan = calcular_activa(plan)
     plan = clasificar_dia(plan)
 
-    plan["TIPO_VISUAL"] = plan["TIPO_DIA"].apply(tipo_visual)
-
     # ============================================================
     # KPI
     # ============================================================
@@ -241,7 +211,7 @@ if uploaded:
     )
 
     # ============================================================
-    # VISTA RÁPIDA
+    # VISTA PRINCIPAL (RÁPIDA Y SEGURA)
     # ============================================================
 
     st.subheader("📋 Plan Detallado")
@@ -249,30 +219,19 @@ if uploaded:
     st.dataframe(
         plan.sort_values(["MAQUINA", "FECHA"]),
         use_container_width=True,
-        height=400
-    )
-
-    # ============================================================
-    # VISTA COLOR
-    # ============================================================
-
-    st.subheader("🎨 Vista Coloreada")
-
-    st.write(
-        plan.sort_values(["MAQUINA", "FECHA"])
-        .style.applymap(color_tipo, subset=["TIPO_DIA"])
+        height=450
     )
 
     # ============================================================
     # KPI
     # ============================================================
 
-    st.subheader("📊 Máquinas Activas Reales")
+    st.subheader("📊 Máquinas Activas (REAL)")
 
     st.dataframe(maquinas_dia)
 
     # ============================================================
-    # PIVOT TIPO EXCEL
+    # PIVOT
     # ============================================================
 
     pivot = plan.pivot_table(
@@ -301,5 +260,5 @@ if uploaded:
     st.download_button(
         "📥 Descargar Excel",
         data=output.getvalue(),
-        file_name="PLAN_TEJIDO_PRO.xlsx"
+        file_name="PLAN_TEJIDO_PRO_FINAL.xlsx"
     )
