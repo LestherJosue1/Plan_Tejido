@@ -62,7 +62,7 @@ def generar_asignacion_dummy(demanda, fechas, maquinas):
         lbs = d.get("LBS_PENDIENTES", 0)
 
         for f in fechas:
-            for m in maquinas[:2]:
+            for m in maquinas[:235]:
 
                 if lbs <= 0:
                     break
