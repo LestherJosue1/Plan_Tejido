@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import io
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-st.set_page_config(page_title="Plan Tejido v4", layout="wide")
+st.set_page_config(page_title="Plan Tejido v5 PRO", layout="wide")
 
 # ============================================================
 # HELPERS
@@ -23,7 +22,7 @@ def parse_date(x):
     return pd.to_datetime(x, errors="coerce").normalize()
 
 # ============================================================
-# MODELO BASE
+# BASE
 # ============================================================
 
 def build_plan_base(estado_maquina, fechas):
@@ -51,7 +50,7 @@ def build_plan_base(estado_maquina, fechas):
     return pd.DataFrame(records)
 
 # ============================================================
-# MOTOR DEMO (reemplazable por tu lógica real)
+# MOTOR DEMO
 # ============================================================
 
 def generar_asignacion_dummy(demanda, fechas, maquinas):
@@ -63,8 +62,7 @@ def generar_asignacion_dummy(demanda, fechas, maquinas):
         lbs = d.get("LBS_PENDIENTES", 0)
 
         for f in fechas:
-
-            for m in maquinas[:2]:  # solo ejemplo
+            for m in maquinas[:2]:
 
                 if lbs <= 0:
                     break
@@ -84,7 +82,7 @@ def generar_asignacion_dummy(demanda, fechas, maquinas):
     return pd.DataFrame(asignaciones)
 
 # ============================================================
-# APPLY PLAN
+# APPLY
 # ============================================================
 
 def apply_plan_nuevo(plan_df, asignaciones):
@@ -103,13 +101,12 @@ def apply_plan_nuevo(plan_df, asignaciones):
     return plan_df
 
 # ============================================================
-# CONTINUIDAD REAL
+# CONTINUIDAD
 # ============================================================
 
 def calcular_continuidad(plan_df):
 
     plan_df = plan_df.sort_values(["MAQUINA", "FECHA"])
-
     continuidad = []
 
     for maq, g in plan_df.groupby("MAQUINA"):
@@ -121,19 +118,14 @@ def calcular_continuidad(plan_df):
 
             cont = False
 
-            # Producción
             if r["PLAN_NUEVO_LBS"] > 0:
 
-                if (
-                    estilo_prev == r["ESTILO_NUEVO"]
-                    and activo_prev
-                ):
+                if estilo_prev == r["ESTILO_NUEVO"]:
                     cont = True
 
                 estilo_prev = r["ESTILO_NUEVO"]
                 activo_prev = True
 
-            # Primer día con plan anterior
             elif str(r["PLAN_ANTERIOR_ESTILO"]).strip() != "":
                 cont = True
                 estilo_prev = r["PLAN_ANTERIOR_ESTILO"]
@@ -148,7 +140,7 @@ def calcular_continuidad(plan_df):
     return plan_df
 
 # ============================================================
-# ACTIVA CORREGIDO ✅
+# ACTIVA
 # ============================================================
 
 def calcular_activa(plan_df):
@@ -161,7 +153,7 @@ def calcular_activa(plan_df):
     return plan_df
 
 # ============================================================
-# TIPO DIA CORREGIDO ✅
+# TIPO DIA
 # ============================================================
 
 def clasificar_dia(plan_df):
@@ -181,8 +173,16 @@ def clasificar_dia(plan_df):
     return plan_df
 
 # ============================================================
-# COLOR VISUAL
+# VISUAL MEJORADO
 # ============================================================
+
+def tipo_visual(tipo):
+    if tipo == "PRODUCCION":
+        return "🟢 PRODUCCION"
+    elif tipo == "CONTINUIDAD":
+        return "🔵 CONTINUIDAD"
+    else:
+        return "⚪ OCIOSO"
 
 def color_tipo(val):
     if val == "PRODUCCION":
@@ -196,7 +196,7 @@ def color_tipo(val):
 # APP
 # ============================================================
 
-st.title("🧵 Plan Tejido v4 - Continuidad Real")
+st.title("🧵 Plan Tejido v5 PRO")
 
 uploaded = st.file_uploader("Sube archivo Excel", type=["xlsx"])
 
@@ -208,7 +208,6 @@ if uploaded:
     demanda = pd.read_excel(xls, "DEMANDA", header=1)
     params = pd.read_excel(xls, "PARAMETROS", header=1)
 
-    # Fechas
     f_ini = parse_date(params.loc[params["Campo"]=="Fecha_inicio_plan","Valor"].values[0])
     f_fin = parse_date(params.loc[params["Campo"]=="Fecha_fin_plan","Valor"].values[0])
 
@@ -229,6 +228,8 @@ if uploaded:
     plan = calcular_activa(plan)
     plan = clasificar_dia(plan)
 
+    plan["TIPO_VISUAL"] = plan["TIPO_DIA"].apply(tipo_visual)
+
     # ============================================================
     # KPI
     # ============================================================
@@ -240,24 +241,38 @@ if uploaded:
     )
 
     # ============================================================
-    # VISUAL
+    # VISTA RÁPIDA
     # ============================================================
 
     st.subheader("📋 Plan Detallado")
 
     st.dataframe(
-        plan.sort_values(["MAQUINA", "FECHA"])
-        .style.applymap(color_tipo, subset=["TIPO_DIA"]),
+        plan.sort_values(["MAQUINA", "FECHA"]),
         use_container_width=True,
-        height=500
+        height=400
     )
 
-    st.subheader("📊 Máquinas Activas (CORRECTO)")
+    # ============================================================
+    # VISTA COLOR
+    # ============================================================
+
+    st.subheader("🎨 Vista Coloreada")
+
+    st.write(
+        plan.sort_values(["MAQUINA", "FECHA"])
+        .style.applymap(color_tipo, subset=["TIPO_DIA"])
+    )
+
+    # ============================================================
+    # KPI
+    # ============================================================
+
+    st.subheader("📊 Máquinas Activas Reales")
 
     st.dataframe(maquinas_dia)
 
     # ============================================================
-    # PIVOT
+    # PIVOT TIPO EXCEL
     # ============================================================
 
     pivot = plan.pivot_table(
@@ -268,7 +283,7 @@ if uploaded:
         fill_value=0
     )
 
-    st.subheader("📊 Pivot tipo Excel")
+    st.subheader("📊 Vista tipo Excel")
 
     st.dataframe(pivot)
 
@@ -286,5 +301,5 @@ if uploaded:
     st.download_button(
         "📥 Descargar Excel",
         data=output.getvalue(),
-        file_name="PLAN_TEJIDO_v5.xlsx"
+        file_name="PLAN_TEJIDO_PRO.xlsx"
     )
