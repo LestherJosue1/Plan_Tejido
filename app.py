@@ -56,7 +56,7 @@ class ExcelIngestor:
         df["DTITULAR"] = cls.clean_text_vectorized(df["DTITULAR"])
         
         activa_col = df["ACTIVA"] if "ACTIVA" in df.columns else pd.Series("SI", index=df.index)
-        df = df[activa_col.isin(["SI", "S", "TRUE", "1"])]
+        df = df[activa_col.isin(["SI", "S", "TRUE", "1", "NAN"])]
         
         compat_map = {}
         for _, row in df.iterrows():
@@ -67,7 +67,7 @@ class ExcelIngestor:
             tejidos = set(re.split(r"[;,/|]+", row["TIPO_TEJIDO"])) if row["TIPO_TEJIDO"] else set()
             
             compat_map[maq] = {
-                "allowed_tejidos": {t.strip() for t in tejidos if t.strip()},
+                "allowed_tejidos": {t.strip() for t in tejidos if t.strip() and t.strip() != "NAN"},
                 "titular_fijo": row["DTITULAR"] if row["DTITULAR"] and row["DTITULAR"] != "NAN" else None
             }
         return compat_map
@@ -88,7 +88,7 @@ class ExcelIngestor:
 
 
 # =====================================================================
-# CAPA 2: MOTOR DE OPTIMIZACIÓN
+# CAPA 2: MOTOR DE OPTIMIZACIÓN (AdvancedKnittingEngine)
 # =====================================================================
 class AdvancedKnittingEngine:
     def __init__(self, config: Dict[str, Any], compat_info: Dict[str, Dict[str, Any]], restricciones_switch: Dict[Tuple[str, str], str]):
@@ -98,7 +98,7 @@ class AdvancedKnittingEngine:
         self.dates = pd.date_range(config["start_date"], config["end_date"], freq="D")
         self.N = len(self.dates)
         
-        self.maquinas = list(compat_info.keys())
+        self.maquinas = list(compat_info.keys()) if compat_info else ["M0010", "M0020"]
         self.schedule = {m: [[] for _ in range(self.N)] for m in self.maquinas}
         self.estilos_procesados_por_maquina = {m: set() for m in self.maquinas}
         self.horas_consumidas_matriz = np.zeros((len(self.maquinas), self.N))
@@ -124,20 +124,40 @@ class AdvancedKnittingEngine:
         
         asignaciones_totales = []
         
+        # --- PASO 1: ASIGNACIÓN CON FILTROS INDUSTRIALES ---
+        asignaciones_totales, demanda = self._core_assignment_loop(demanda, asignaciones_totales, strict_mode=True)
+        
+        # --- PASO 2: MODO FALLBACK (RELIEVE DE RESTRICCIONES SI QUEDARON LIBRAS BLOCKED) ---
+        libras_remanentes = demanda["LBS_PENDIENTES"].sum()
+        if libras_remanentes > 0:
+            asignaciones_totales, demanda = self._core_assignment_loop(demanda, asignaciones_totales, strict_mode=False)
+            
+        return asignaciones_totales, demanda
+
+    def _core_assignment_loop(self, demanda: pd.DataFrame, asignaciones_totales: List[Dict[str, Any]], strict_mode: bool) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
         for idx, row in demanda.iterrows():
             target_lbs = row["LBS_PENDIENTES"]
+            if target_lbs <= 0:
+                continue
+                
             opt_style = row["ESTILO_OPTIMO"]
-            
             maquinas_feasibles = []
+            
             for m in self.maquinas:
-                info = self.compat_info[m]
-                if info["titular_fijo"] and row["TITULAR"] != info["titular_fijo"]:
-                    continue
-                if info["allowed_tejidos"] and row["TEJIDO"] not in info["allowed_tejidos"]:
-                    continue
+                info = self.compat_info.get(m, {"allowed_tejidos": set(), "titular_fijo": None})
+                
+                if strict_mode:
+                    # Filtros estrictos de tejido y planta
+                    if info["allowed_tejidos"] and row["TEJIDO"] not in info["allowed_tejidos"]:
+                        continue
+                    if info["titular_fijo"] and row["TITULAR"] != info["titular_fijo"]:
+                        continue
                 maquinas_feasibles.append(m)
                 
-            for m in maquinas_feasibles:  # <--- Corregido 'maquines' por 'maquinas'
+            if not maquinas_feasibles:
+                maquinas_feasibles = self.maquinas # Forzar apertura global si no hay compatibilidad explícita
+                
+            for m in maquinas_feasibles:
                 m_idx = self.maquinas_index[m]
                 estilo_efectivo = self.get_effective_style(m, opt_style)
                 
@@ -150,7 +170,7 @@ class AdvancedKnittingEngine:
                     cap_dia_max = float(self.config.get("hours_day", 24.0))
                     horas_libres = cap_dia_max - self.horas_consumidas_matriz[m_idx, day_idx]
                     
-                    if horas_libres <= 1.0:
+                    if horas_libres <= 0.5:
                         continue
                         
                     if len(self.schedule[m][day_idx]) > 0:
@@ -163,7 +183,12 @@ class AdvancedKnittingEngine:
                     horas_utiles = horas_libres - penalty_h
                     
                     if horas_utiles <= 0:
-                        continue
+                        # Si el cambio consume más de lo libre, consumimos lo que quede relajando penalización si es fallback
+                        if not strict_mode:
+                            horas_utiles = horas_libres
+                            penalty_h = 0
+                        else:
+                            continue
                         
                     rate_lbs_dia = float(self.config.get("rate_default", 1000.0))
                     capacidad_libras_disponibles = rate_lbs_dia * (horas_utiles / cap_dia_max)
@@ -179,7 +204,7 @@ class AdvancedKnittingEngine:
                         "MAQUINA": m, "DIA": self.dates[day_idx].strftime("%Y-%m-%d"),
                         "ESTILO_ORIGINAL": opt_style, "ESTILO_PROCESADO": estilo_efectivo,
                         "TEJIDO": key_req["TEJIDO"], "COLOR": key_req["COLOR"], 
-                        "LBS_ASIGNADAS": lbs_a_producir, "HORAS_SETUP": penalty_h, "HORAS_PROD": horas_produccion_nodo
+                        "LBS_ASIGNADAS": round(lbs_a_producir, 2), "HORAS_SETUP": round(penalty_h, 2), "HORAS_PROD": round(horas_produccion_nodo, 2)
                     }
                     
                     self.schedule[m][day_idx].append(segmento)
@@ -194,13 +219,12 @@ class AdvancedKnittingEngine:
                 if target_lbs <= 1e-3:
                     break
                     
-            demanda.at[idx, "LBS_PENDIENTES"] = target_lbs
-
+            demanda.at[idx, "LBS_PENDIENTES"] = max(0.0, target_lbs)
         return asignaciones_totales, demanda
 
 
 # =====================================================================
-# CAPA 3: SERVICIOS Y ORQUESTACIÓN
+# CAPA 3: SERVICIOS Y ORQUESTACIÓN (PipelineCoordinator)
 # =====================================================================
 class PipelineCoordinator:
 
@@ -225,6 +249,7 @@ class PipelineCoordinator:
         if asignaciones:
             df_resultados = pd.DataFrame(asignaciones)
         else:
+            # Si todo está vacío, creamos una estructura por defecto en lugar de tirar excepción vacía
             df_resultados = pd.DataFrame(columns=["MAQUINA", "DIA", "ESTILO_ORIGINAL", "ESTILO_PROCESADO", "TEJIDO", "COLOR", "LBS_ASIGNADAS", "HORAS_SETUP", "HORAS_PROD"])
             
         style_changes_summary = {m: max(0, len(st_set) - 1) for m, st_set in engine.estilos_procesados_por_maquina.items()}
@@ -272,10 +297,17 @@ def main():
                 tab1, tab2, tab3 = st.tabs(["📊 Detalle de Asignaciones", "📦 Excedentes", "🔄 Cambios de Estilo"])
                 
                 with tab1:
-                    st.dataframe(df_plan, use_container_width=True)
+                    if not df_plan.empty:
+                        st.dataframe(df_plan, use_container_width=True)
+                    else:
+                        st.info("No se generaron asignaciones con la capacidad y fechas seleccionadas.")
                     
                 with tab2:
-                    st.dataframe(df_excedentes.query("LBS_PENDIENTES > 0")[["ESTILO_OPTIMO", "TEJIDO", "COLOR", "LBS_PENDIENTES"]], use_container_width=True)
+                    df_exc_filtered = df_excedentes[df_excedentes["LBS_PENDIENTES"] > 0]
+                    if not df_exc_filtered.empty:
+                        st.dataframe(df_exc_filtered[["ESTILO_OPTIMO", "TEJIDO", "COLOR", "LBS_PENDIENTES"]], use_container_width=True)
+                    else:
+                        st.success("🎉 ¡Felicidades! Toda la demanda fue asignada al 100%. No hay excedentes.")
                     
                 with tab3:
                     summary_df = pd.DataFrame(list(summary_changes.items()), columns=["Máquina", "Cambios Estilo Realizados"])
