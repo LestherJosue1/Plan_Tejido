@@ -84,6 +84,7 @@ class AdvancedKnittingEngine:
     """Motor de optimización industrial y cálculo métrico basado en operaciones de matrices."""
 
     @staticmethod
+    @staticmethod
     def generate_mesh_plan_base(estado_maquina: pd.DataFrame, horizonte: pd.DatetimeIndex) -> pd.DataFrame:
         """Construye la matriz base del plan usando un producto cartesiano indexado altamente eficiente."""
         maquinas = estado_maquina["MAQUINA"].unique()
@@ -91,6 +92,12 @@ class AdvancedKnittingEngine:
         # Producto cartesiano eficiente vía MultiIndex
         index = pd.MultiIndex.from_product([maquinas, horizonte], names=["MAQUINA", "FECHA"])
         plan_df = pd.DataFrame(index=index).reset_index()
+
+        # --- PROTECCIÓN CONTRA COLUMNAS FALTANTES ---
+        # Si la columna no existe en el Excel, la creamos vacía para no romper la matriz
+        for col_requerida in ["ESTILO_REAL", "LOTE_HILO"]:
+            if col_requerida not in estado_maquina.columns:
+                estado_maquina[col_requerida] = ""
 
         # Unir estado inicial de planta mapeando únicamente el primer día
         estado_inicial = estado_maquina[["MAQUINA", "ESTILO_REAL", "LOTE_HILO"]].rename(
@@ -111,7 +118,6 @@ class AdvancedKnittingEngine:
         plan_df["PLAN_NUEVO_LBS"] = 0.0
 
         return plan_df
-
     @staticmethod
     def execute_smart_assignment(demanda: pd.DataFrame, maquinas: List[str], horizonte: pd.DatetimeIndex) -> pd.DataFrame:
         """
