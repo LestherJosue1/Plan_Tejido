@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Dict, Any, Tuple, List, Set
 
 # =====================================================================
-# CAPA 1: DATOS E INGESTA (ExcelIngestor) - ACOPLADO A TU PLANTILLA
+# CAPA 1: DATOS E INGESTA (ExcelIngestor) - AJUSTADO A FILA DE ENCABEZADOS
 # =====================================================================
 class ExcelIngestor:
     
@@ -24,11 +24,11 @@ class ExcelIngestor:
         df = df.copy()
         df.columns = df.columns.astype(str).str.strip().str.upper()
         
-        # Mapeos exactos según la pestaña DEMANDA de tu archivo
+        # Mapeos exactos usando header=1
         df["ESTILO_OPTIMO"] = cls.clean_text_vectorized(df["ESTILO_OPTIMO"])
-        df["TEJIDO"] = cls.clean_text_vectorized(df["TIPO_TEJIDO"])  # <--- Cambiado a TIPO_TEJIDO
+        df["TEJIDO"] = cls.clean_text_vectorized(df["TIPO_TEJIDO"])  
         df["COLOR"] = cls.clean_text_vectorized(df["COLOR"])
-        df["TITULAR"] = cls.clean_text_vectorized(df["DTITULAR"])    # <--- Cambiado a DTITULAR
+        df["TITULAR"] = cls.clean_text_vectorized(df["DTITULAR"])    
         df["LOTE_HILO"] = cls.clean_text_vectorized(df["LOTE_HILO"])
         df["LBS_PENDIENTES"] = pd.to_numeric(df["LBS_PENDIENTES"], errors="coerce").fillna(0.0).astype(float)
         
@@ -65,7 +65,6 @@ class ExcelIngestor:
             if not maq or maq == "NAN":
                 continue
             
-            # Separar tejidos si vienen múltiples en la misma celda
             tejidos = set(re.split(r"[;,/|]+", row["TIPO_TEJIDO"])) if row["TIPO_TEJIDO"] else set()
             
             compat_map[maq] = {
@@ -85,7 +84,6 @@ class ExcelIngestor:
         df["OPTIMO_CLEAN"] = cls.clean_text_vectorized(df["ESTILO_OPTIMO"])
         df["REAL_CLEAN"] = cls.clean_text_vectorized(df["ESTILO_REAL"])
         
-        # Filtrar casos donde se requiera aplicar el SWITCH (estilo real != estilo optimo)
         df_switch = df[(df["REAL_CLEAN"].str.len() > 0) & (df["OPTIMO_CLEAN"] != df["REAL_CLEAN"])]
         return dict(zip(zip(df_switch["MAQUINA_CLEAN"], df_switch["OPTIMO_CLEAN"]), df_switch["REAL_CLEAN"]))
 
@@ -108,7 +106,6 @@ class AdvancedKnittingEngine:
         self.maquinas_index = {m: idx for idx, m in enumerate(self.maquinas)}
 
     def get_effective_style(self, maquina: str, estilo_optimo: str) -> str:
-        # Switch dinámico de la pestaña RESTRICCIONES
         return self.switch_estilos.get((maquina, estilo_optimo), estilo_optimo)
 
     def calculate_transition_penalty(self, current_key: Dict[str, str], next_key: Dict[str, str]) -> float:
@@ -141,7 +138,7 @@ class AdvancedKnittingEngine:
                     continue
                 maquinas_feasibles.append(m)
                 
-            for m in maquinas_feasibles:
+            for m in maquines_feasibles:
                 m_idx = self.maquinas_index[m]
                 estilo_efectivo = self.get_effective_style(m, opt_style)
                 
@@ -210,23 +207,20 @@ class PipelineCoordinator:
 
     @classmethod
     def run_pipeline(cls, uploaded_file, parameters: Dict[str, Any]) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
-        # Lectura directa de las hojas oficiales de tu plantilla
-        df_demanda_raw = pd.read_excel(uploaded_file, sheet_name="DEMANDA", header=0)
-        df_compat_raw = pd.read_excel(uploaded_file, sheet_name="COMPAT_MAQUINA", header=0)
+        # LEER CON header=1 PARA SALTAR EL TITULO DESCRIPCIVO DE LA FILA 1
+        df_demanda_raw = pd.read_excel(uploaded_file, sheet_name="DEMANDA", header=1)
+        df_compat_raw = pd.read_excel(uploaded_file, sheet_name="COMPAT_MAQUINA", header=1)
         
-        # Lectura opcional de restricciones si existe la pestaña
         xl = pd.ExcelFile(uploaded_file)
         if "RESTRICCIONES" in xl.sheet_names:
-            df_restr_raw = pd.read_excel(uploaded_file, sheet_name="RESTRICCIONES", header=0)
+            df_restr_raw = pd.read_excel(uploaded_file, sheet_name="RESTRICCIONES", header=1)
         else:
             df_restr_raw = pd.DataFrame()
             
-        # Procesamiento estructurado
         df_demanda = ExcelIngestor.process_demanda(df_demanda_raw, parameters["start_date"], parameters["end_date"])
         compat_map = ExcelIngestor.process_compatibilidad(df_compat_raw)
         switch_map = ExcelIngestor.process_restricciones(df_restr_raw)
         
-        # Motor
         engine = AdvancedKnittingEngine(parameters, compat_map, switch_map)
         asignaciones, df_excedentes = engine.evaluate_and_assign_vectorized(df_demanda)
         
@@ -251,6 +245,7 @@ def main():
     st.markdown("---")
     
     st.sidebar.header("🎛️ Parámetros del Horizonte Semanal")
+    # Configurado por defecto para alinearse a las fechas de tu plantilla (Febrero 2026)
     start_date_input = st.sidebar.date_input("Fecha Inicio Plan", datetime(2026, 2, 13))
     end_date_input = st.sidebar.date_input("Fecha Fin Plan", datetime(2026, 2, 19))
     
