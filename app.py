@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Dict, Any, Tuple, List, Set
 
 # =====================================================================
-# CAPA 1: DATOS E INGESTA (ExcelIngestor) - AJUSTADO A FILA DE ENCABEZADOS
+# CAPA 1: DATOS E INGESTA (ExcelIngestor)
 # =====================================================================
 class ExcelIngestor:
     
@@ -24,7 +24,6 @@ class ExcelIngestor:
         df = df.copy()
         df.columns = df.columns.astype(str).str.strip().str.upper()
         
-        # Mapeos exactos usando header=1
         df["ESTILO_OPTIMO"] = cls.clean_text_vectorized(df["ESTILO_OPTIMO"])
         df["TEJIDO"] = cls.clean_text_vectorized(df["TIPO_TEJIDO"])  
         df["COLOR"] = cls.clean_text_vectorized(df["COLOR"])
@@ -89,7 +88,7 @@ class ExcelIngestor:
 
 
 # =====================================================================
-# CAPA 2: MOTOR DE OPTIMIZACIÓN (AdvancedKnittingEngine)
+# CAPA 2: MOTOR DE OPTIMIZACIÓN
 # =====================================================================
 class AdvancedKnittingEngine:
     def __init__(self, config: Dict[str, Any], compat_info: Dict[str, Dict[str, Any]], restricciones_switch: Dict[Tuple[str, str], str]):
@@ -138,7 +137,7 @@ class AdvancedKnittingEngine:
                     continue
                 maquinas_feasibles.append(m)
                 
-            for m in maquines_feasibles:
+            for m in maquinas_feasibles:  # <--- Corregido 'maquines' por 'maquinas'
                 m_idx = self.maquinas_index[m]
                 estilo_efectivo = self.get_effective_style(m, opt_style)
                 
@@ -201,13 +200,12 @@ class AdvancedKnittingEngine:
 
 
 # =====================================================================
-# CAPA 3: SERVICIOS Y ORQUESTACIÓN (PipelineCoordinator)
+# CAPA 3: SERVICIOS Y ORQUESTACIÓN
 # =====================================================================
 class PipelineCoordinator:
 
     @classmethod
     def run_pipeline(cls, uploaded_file, parameters: Dict[str, Any]) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
-        # LEER CON header=1 PARA SALTAR EL TITULO DESCRIPCIVO DE LA FILA 1
         df_demanda_raw = pd.read_excel(uploaded_file, sheet_name="DEMANDA", header=1)
         df_compat_raw = pd.read_excel(uploaded_file, sheet_name="COMPAT_MAQUINA", header=1)
         
@@ -245,7 +243,6 @@ def main():
     st.markdown("---")
     
     st.sidebar.header("🎛️ Parámetros del Horizonte Semanal")
-    # Configurado por defecto para alinearse a las fechas de tu plantilla (Febrero 2026)
     start_date_input = st.sidebar.date_input("Fecha Inicio Plan", datetime(2026, 2, 13))
     end_date_input = st.sidebar.date_input("Fecha Fin Plan", datetime(2026, 2, 19))
     
