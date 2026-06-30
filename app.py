@@ -20,17 +20,41 @@ if uploaded_file:
             st.error(f"Estructura inválida. Faltan pestañas críticas del sistema: {pestanas_criticas - set(xls.sheet_names)}")
             st.stop()
             
-        # Ingesta técnica de datos REPLICANDO EXACTAMENTE EL COMPORTAMIENTO DE TU COLAB
-        params_df = pd.read_excel(xls, "PARAMETROS")
-        estado_df = pd.read_excel(xls, "ESTADO_MAQUINA")
-        demanda_df = pd.read_excel(xls, "DEMANDA")
-        compat_df = pd.read_excel(xls, "COMPAT_MAQUINA")
-        rates_df = pd.read_excel(xls, "RATES")
-        reglas_df = pd.read_excel(xls, "REGLAS")
+        # LECTURA ROBUSTA (Busca los encabezados reales ignorando filas vacías arriba)
+        def cargar_pestaña_segura(excel_obj, sheet_name):
+            # Intenta leer normal (fila 0)
+            df = pd.read_excel(excel_obj, sheet_name=sheet_name)
+            
+            # Si las columnas esperadas no están arriba, busca en las siguientes filas
+            columnas_esperadas = {
+                "PARAMETROS": "Campo",
+                "ESTADO_MAQUINA": "MAQUINA",
+                "DEMANDA": "LBS_PENDIENTES",
+                "COMPAT_MAQUINA": "MAQUINA",
+                "RATES": "RATE_LBS_DIA",
+                "REGLAS": "Regla"
+            }
+            
+            target_col = columnas_esperadas.get(sheet_name)
+            if target_col and target_col not in df.columns:
+                # Buscar hasta en las primeras 5 filas dónde está el encabezado real
+                for skip in range(1, 6):
+                    df_trial = pd.read_excel(excel_obj, sheet_name=sheet_name, header=skip)
+                    if target_col in df_trial.columns:
+                        return df_trial
+            return df
+
+        # Ingesta automatizada y tolerante
+        params_df = cargar_pestaña_segura(xls, "PARAMETROS")
+        estado_df = cargar_pestaña_segura(xls, "ESTADO_MAQUINA")
+        demanda_df = cargar_pestaña_segura(xls, "DEMANDA")
+        compat_df = cargar_pestaña_segura(xls, "COMPAT_MAQUINA")
+        rates_df = cargar_pestaña_segura(xls, "RATES")
+        reglas_df = cargar_pestaña_segura(xls, "REGLAS")
         
-        # Ingesta de opcionales idéntica a Colab
-        restr_df = pd.read_excel(xls, "RESTRICCIONES") if "RESTRICCIONES" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","ESTILO","TITULAR","TEJIDO","LOTE_HILO","PERMITIR","MOTIVO"])
-        cal_df = pd.read_excel(xls, "CALENDARIO_MAQUINA") if "CALENDARIO_MAQUINA" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","FECHA_INICIO","FECHA_FIN","TIPO","HORAS_DISPONIBLES"])
+        # Opcionales
+        restr_df = cargar_pestaña_segura(xls, "RESTRICCIONES") if "RESTRICCIONES" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","ESTILO","TITULAR","TEJIDO","LOTE_HILO","PERMITIR","MOTIVO"])
+        cal_df = cargar_pestaña_segura(xls, "CALENDARIO_MAQUINA") if "CALENDARIO_MAQUINA" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","FECHA_INICIO","FECHA_FIN","TIPO","HORAS_DISPONIBLES"])
 
         # Ejecución del Algoritmo del Motor
         with st.spinner("Ejecutando asignaciones y resolviendo restricciones por fases..."):
