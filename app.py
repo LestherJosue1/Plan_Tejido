@@ -20,17 +20,17 @@ if uploaded_file:
             st.error(f"Estructura inválida. Faltan pestañas críticas del sistema: {pestanas_criticas - set(xls.sheet_names)}")
             st.stop()
             
-        # Ingesta técnica de datos emulando el comportamiento Colab (header=1) [cite: 3]
-        params_df = pd.read_excel(xls, "PARAMETROS", header=1)
-        estado_df = pd.read_excel(xls, "ESTADO_MAQUINA", header=1)
-        demanda_df = pd.read_excel(xls, "DEMANDA", header=1)
-        compat_df = pd.read_excel(xls, "COMPAT_MAQUINA", header=1)
-        rates_df = pd.read_excel(xls, "RATES", header=1)
-        reglas_df = pd.read_excel(xls, "REGLAS", header=1)
+        # Ingesta técnica de datos REPLICANDO EXACTAMENTE EL COMPORTAMIENTO DE TU COLAB
+        params_df = pd.read_excel(xls, "PARAMETROS")
+        estado_df = pd.read_excel(xls, "ESTADO_MAQUINA")
+        demanda_df = pd.read_excel(xls, "DEMANDA")
+        compat_df = pd.read_excel(xls, "COMPAT_MAQUINA")
+        rates_df = pd.read_excel(xls, "RATES")
+        reglas_df = pd.read_excel(xls, "REGLAS")
         
-        # Ingesta flexible de opcionales [cite: 3]
-        restr_df = pd.read_excel(xls, "RESTRICCIONES", header=1) if "RESTRICCIONES" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","ESTILO","TITULAR","TEJIDO","LOTE_HILO","PERMITIR","MOTIVO"])
-        cal_df = pd.read_excel(xls, "CALENDARIO_MAQUINA", header=1) if "CALENDARIO_MAQUINA" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","FECHA_INICIO","FECHA_FIN","TIPO","HORAS_DISPONIBLES"])
+        # Ingesta de opcionales idéntica a Colab
+        restr_df = pd.read_excel(xls, "RESTRICCIONES") if "RESTRICCIONES" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","ESTILO","TITULAR","TEJIDO","LOTE_HILO","PERMITIR","MOTIVO"])
+        cal_df = pd.read_excel(xls, "CALENDARIO_MAQUINA") if "CALENDARIO_MAQUINA" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","FECHA_INICIO","FECHA_FIN","TIPO","HORAS_DISPONIBLES"])
 
         # Ejecución del Algoritmo del Motor
         with st.spinner("Ejecutando asignaciones y resolviendo restricciones por fases..."):
