@@ -1,324 +1,122 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import re
-from datetime import datetime
-from typing import Dict, Any, Tuple, List, Set
+import io
+from core.engine import build_plan_base, generar_asignacion_avanzada, integrar_y_clasificar_plan
 
-# =====================================================================
-# CAPA 1: DATOS E INGESTA (ExcelIngestor)
-# =====================================================================
-class ExcelIngestor:
+st.set_page_config(page_title="Plan Tejido de Avanzada v6", layout="wide")
+
+# Helpers de Parseo de Datos
+def clean_machine_series(series: pd.Series) -> pd.Series:
+    return series.dropna().astype(float).astype(int).astype(str).str.zfill(4)
+
+def parse_date(x):
+    return pd.to_datetime(x, errors="coerce").normalize()
+
+# ============================================================
+# CAPA DE CACHÉ PARA PERFORMANCE CRÍTICO
+# ============================================================
+@st.cache_data(show_spinner="Ejecutando algoritmos de asignación y lógica industrial...")
+def procesar_planificacion(df_estado, df_demanda, df_params):
+    # Extracción segura de parámetros temporales
+    f_ini_val = df_params.loc[df_params["Campo"] == "Fecha_inicio_plan", "Valor"].values[0]
+    f_fin_val = df_params.loc[df_params["Campo"] == "Fecha_fin_plan", "Valor"].values[0]
     
-    @staticmethod
-    def clean_text_vectorized(series: pd.Series) -> pd.Series:
-        return series.astype(str).str.strip().str.replace(r"\s+", " ", regex=True).str.upper()
-
-    @staticmethod
-    def clean_machine_vectorized(series: pd.Series, width: int = 4) -> pd.Series:
-        cleaned = series.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-        return cleaned.apply(lambda x: x.zfill(width) if x.isdigit() and len(x) < width else x)
-
-    @classmethod
-    def process_demanda(cls, df: pd.DataFrame, start_date: datetime, end_date: datetime) -> pd.DataFrame:
-        df = df.copy()
-        df.columns = df.columns.astype(str).str.strip().str.upper()
-        
-        df["ESTILO_OPTIMO"] = cls.clean_text_vectorized(df["ESTILO_OPTIMO"])
-        df["TEJIDO"] = cls.clean_text_vectorized(df["TIPO_TEJIDO"])  
-        df["COLOR"] = cls.clean_text_vectorized(df["COLOR"])
-        df["TITULAR"] = cls.clean_text_vectorized(df["DTITULAR"])    
-        df["LOTE_HILO"] = cls.clean_text_vectorized(df["LOTE_HILO"])
-        df["LBS_PENDIENTES"] = pd.to_numeric(df["LBS_PENDIENTES"], errors="coerce").fillna(0.0).astype(float)
-        
-        if "FECHA_COMPROMISO" in df.columns:
-            df["FECHA_COMPROMISO"] = pd.to_datetime(df["FECHA_COMPROMISO"], errors="coerce")
-        else:
-            df["FECHA_COMPROMISO"] = pd.NaT
-            
-        prio_map = {"ALTA": 3, "ALTO": 3, "MEDIA": 2, "MEDIO": 2, "BAJA": 1, "BAJO": 1}
-        df["PRIO_NUM"] = cls.clean_text_vectorized(df.get("PRIORIDAD", pd.Series("MEDIA", index=df.index))).map(prio_map).fillna(2)
-        
-        df["DUE_BUCKET"] = 2
-        if not pd.isna(start_date):
-            df.loc[df["FECHA_COMPROMISO"] < start_date, "DUE_BUCKET"] = 0
-            df.loc[(df["FECHA_COMPROMISO"] >= start_date) & (df["FECHA_COMPROMISO"] <= end_date), "DUE_BUCKET"] = 1
-            
-        return df
-
-    @classmethod
-    def process_compatibilidad(cls, df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-        df = df.copy()
-        df.columns = df.columns.astype(str).str.strip().str.upper()
-        
-        df["MAQUINA"] = cls.clean_machine_vectorized(df["MAQUINA"])
-        df["TIPO_TEJIDO"] = cls.clean_text_vectorized(df["TIPO_TEJIDO"])
-        df["DTITULAR"] = cls.clean_text_vectorized(df["DTITULAR"])
-        
-        activa_col = df["ACTIVA"] if "ACTIVA" in df.columns else pd.Series("SI", index=df.index)
-        df = df[activa_col.isin(["SI", "S", "TRUE", "1", "NAN"])]
-        
-        compat_map = {}
-        for _, row in df.iterrows():
-            maq = row["MAQUINA"]
-            if not maq or maq == "NAN":
-                continue
-            
-            tejidos = set(re.split(r"[;,/|]+", row["TIPO_TEJIDO"])) if row["TIPO_TEJIDO"] else set()
-            
-            compat_map[maq] = {
-                "allowed_tejidos": {t.strip() for t in tejidos if t.strip() and t.strip() != "NAN"},
-                "titular_fijo": row["DTITULAR"] if row["DTITULAR"] and row["DTITULAR"] != "NAN" else None
-            }
-        return compat_map
-
-    @classmethod
-    def process_restricciones(cls, df: pd.DataFrame) -> Dict[Tuple[str, str], str]:
-        if df.empty:
-            return {}
-        df = df.copy()
-        df.columns = df.columns.astype(str).str.strip().str.upper()
-        
-        df["MAQUINA_CLEAN"] = cls.clean_machine_vectorized(df["MAQUINA"])
-        df["OPTIMO_CLEAN"] = cls.clean_text_vectorized(df["ESTILO_OPTIMO"])
-        df["REAL_CLEAN"] = cls.clean_text_vectorized(df["ESTILO_REAL"])
-        
-        df_switch = df[(df["REAL_CLEAN"].str.len() > 0) & (df["OPTIMO_CLEAN"] != df["REAL_CLEAN"])]
-        return dict(zip(zip(df_switch["MAQUINA_CLEAN"], df_switch["OPTIMO_CLEAN"]), df_switch["REAL_CLEAN"]))
-
-
-# =====================================================================
-# CAPA 2: MOTOR DE OPTIMIZACIÓN (AdvancedKnittingEngine)
-# =====================================================================
-class AdvancedKnittingEngine:
-    def __init__(self, config: Dict[str, Any], compat_info: Dict[str, Dict[str, Any]], restricciones_switch: Dict[Tuple[str, str], str]):
-        self.config = config
-        self.compat_info = compat_info
-        self.switch_estilos = restricciones_switch
-        self.dates = pd.date_range(config["start_date"], config["end_date"], freq="D")
-        self.N = len(self.dates)
-        
-        self.maquinas = list(compat_info.keys()) if compat_info else ["M0010", "M0020"]
-        self.schedule = {m: [[] for _ in range(self.N)] for m in self.maquinas}
-        self.estilos_procesados_por_maquina = {m: set() for m in self.maquinas}
-        self.horas_consumidas_matriz = np.zeros((len(self.maquinas), self.N))
-        self.maquinas_index = {m: idx for idx, m in enumerate(self.maquinas)}
-
-    def get_effective_style(self, maquina: str, estilo_optimo: str) -> str:
-        return self.switch_estilos.get((maquina, estilo_optimo), estilo_optimo)
-
-    def calculate_transition_penalty(self, current_key: Dict[str, str], next_key: Dict[str, str]) -> float:
-        if current_key["ESTILO"] in ("DISPONIBLE", ""):
-            return 0.0
-        if current_key["TEJIDO"] != next_key["TEJIDO"]:
-            return float(self.config.get("pen_tejido", 24.0))
-        if current_key["ESTILO"] != next_key["ESTILO"]:
-            return float(self.config.get("pen_estilo", 8.0))
-        if current_key["LOTE_HILO"] != next_key["LOTE_HILO"]:
-            return float(self.config.get("pen_lote", 4.0))
-        return 0.0
-
-    def evaluate_and_assign_vectorized(self, demanda_df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
-        demanda = demanda_df[demanda_df["LBS_PENDIENTES"] > 0].copy()
-        demanda = demanda.sort_values(by=["DUE_BUCKET", "PRIO_NUM", "LBS_PENDIENTES"], ascending=[True, False, False])
-        
-        asignaciones_totales = []
-        
-        # --- PASO 1: ASIGNACIÓN CON FILTROS INDUSTRIALES ---
-        asignaciones_totales, demanda = self._core_assignment_loop(demanda, asignaciones_totales, strict_mode=True)
-        
-        # --- PASO 2: MODO FALLBACK (RELIEVE DE RESTRICCIONES SI QUEDARON LIBRAS BLOCKED) ---
-        libras_remanentes = demanda["LBS_PENDIENTES"].sum()
-        if libras_remanentes > 0:
-            asignaciones_totales, demanda = self._core_assignment_loop(demanda, asignaciones_totales, strict_mode=False)
-            
-        return asignaciones_totales, demanda
-
-    def _core_assignment_loop(self, demanda: pd.DataFrame, asignaciones_totales: List[Dict[str, Any]], strict_mode: bool) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
-        for idx, row in demanda.iterrows():
-            target_lbs = row["LBS_PENDIENTES"]
-            if target_lbs <= 0:
-                continue
-                
-            opt_style = row["ESTILO_OPTIMO"]
-            maquinas_feasibles = []
-            
-            for m in self.maquinas:
-                info = self.compat_info.get(m, {"allowed_tejidos": set(), "titular_fijo": None})
-                
-                if strict_mode:
-                    # Filtros estrictos de tejido y planta
-                    if info["allowed_tejidos"] and row["TEJIDO"] not in info["allowed_tejidos"]:
-                        continue
-                    if info["titular_fijo"] and row["TITULAR"] != info["titular_fijo"]:
-                        continue
-                maquinas_feasibles.append(m)
-                
-            if not maquinas_feasibles:
-                maquinas_feasibles = self.maquinas # Forzar apertura global si no hay compatibilidad explícita
-                
-            for m in maquinas_feasibles:
-                m_idx = self.maquinas_index[m]
-                estilo_efectivo = self.get_effective_style(m, opt_style)
-                
-                key_req = {
-                    "ESTILO": estilo_efectivo, "TEJIDO": row["TEJIDO"], 
-                    "LOTE_HILO": row["LOTE_HILO"], "COLOR": row["COLOR"]
-                }
-                
-                for day_idx in range(self.N):
-                    cap_dia_max = float(self.config.get("hours_day", 24.0))
-                    horas_libres = cap_dia_max - self.horas_consumidas_matriz[m_idx, day_idx]
-                    
-                    if horas_libres <= 0.5:
-                        continue
-                        
-                    if len(self.schedule[m][day_idx]) > 0:
-                        last_seg = self.schedule[m][day_idx][-1]
-                        current_state = {"ESTILO": last_seg["ESTILO"], "TEJIDO": last_seg["TEJIDO"], "LOTE_HILO": last_seg["LOTE_HILO"]}
-                    else:
-                        current_state = {"ESTILO": "", "TEJIDO": "", "LOTE_HILO": ""}
-                        
-                    penalty_h = self.calculate_transition_penalty(current_state, key_req)
-                    horas_utiles = horas_libres - penalty_h
-                    
-                    if horas_utiles <= 0:
-                        # Si el cambio consume más de lo libre, consumimos lo que quede relajando penalización si es fallback
-                        if not strict_mode:
-                            horas_utiles = horas_libres
-                            penalty_h = 0
-                        else:
-                            continue
-                        
-                    rate_lbs_dia = float(self.config.get("rate_default", 1000.0))
-                    capacidad_libras_disponibles = rate_lbs_dia * (horas_utiles / cap_dia_max)
-                    
-                    lbs_a_producir = min(target_lbs, capacidad_libras_disponibles)
-                    if lbs_a_producir <= 0:
-                        continue
-                        
-                    horas_produccion_nodo = cap_dia_max * (lbs_a_producir / rate_lbs_dia)
-                    horas_totales_nodo = horas_produccion_nodo + penalty_h
-                    
-                    segmento = {
-                        "MAQUINA": m, "DIA": self.dates[day_idx].strftime("%Y-%m-%d"),
-                        "ESTILO_ORIGINAL": opt_style, "ESTILO_PROCESADO": estilo_efectivo,
-                        "TEJIDO": key_req["TEJIDO"], "COLOR": key_req["COLOR"], 
-                        "LBS_ASIGNADAS": round(lbs_a_producir, 2), "HORAS_SETUP": round(penalty_h, 2), "HORAS_PROD": round(horas_produccion_nodo, 2)
-                    }
-                    
-                    self.schedule[m][day_idx].append(segmento)
-                    self.estilos_procesados_por_maquina[m].add(estilo_efectivo)
-                    self.horas_consumidas_matriz[m_idx, day_idx] += horas_totales_nodo
-                    
-                    asignaciones_totales.append(segmento)
-                    target_lbs -= lbs_a_producir
-                    
-                    if target_lbs <= 1e-3:
-                        break
-                if target_lbs <= 1e-3:
-                    break
-                    
-            demanda.at[idx, "LBS_PENDIENTES"] = max(0.0, target_lbs)
-        return asignaciones_totales, demanda
-
-
-# =====================================================================
-# CAPA 3: SERVICIOS Y ORQUESTACIÓN (PipelineCoordinator)
-# =====================================================================
-class PipelineCoordinator:
-
-    @classmethod
-    def run_pipeline(cls, uploaded_file, parameters: Dict[str, Any]) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
-        df_demanda_raw = pd.read_excel(uploaded_file, sheet_name="DEMANDA", header=1)
-        df_compat_raw = pd.read_excel(uploaded_file, sheet_name="COMPAT_MAQUINA", header=1)
-        
-        xl = pd.ExcelFile(uploaded_file)
-        if "RESTRICCIONES" in xl.sheet_names:
-            df_restr_raw = pd.read_excel(uploaded_file, sheet_name="RESTRICCIONES", header=1)
-        else:
-            df_restr_raw = pd.DataFrame()
-            
-        df_demanda = ExcelIngestor.process_demanda(df_demanda_raw, parameters["start_date"], parameters["end_date"])
-        compat_map = ExcelIngestor.process_compatibilidad(df_compat_raw)
-        switch_map = ExcelIngestor.process_restricciones(df_restr_raw)
-        
-        engine = AdvancedKnittingEngine(parameters, compat_map, switch_map)
-        asignaciones, df_excedentes = engine.evaluate_and_assign_vectorized(df_demanda)
-        
-        if asignaciones:
-            df_resultados = pd.DataFrame(asignaciones)
-        else:
-            # Si todo está vacío, creamos una estructura por defecto en lugar de tirar excepción vacía
-            df_resultados = pd.DataFrame(columns=["MAQUINA", "DIA", "ESTILO_ORIGINAL", "ESTILO_PROCESADO", "TEJIDO", "COLOR", "LBS_ASIGNADAS", "HORAS_SETUP", "HORAS_PROD"])
-            
-        style_changes_summary = {m: max(0, len(st_set) - 1) for m, st_set in engine.estilos_procesados_por_maquina.items()}
-        
-        return df_resultados, df_excedentes, style_changes_summary
-
-
-# =====================================================================
-# CAPA 4: PRESENTACIÓN (Streamlit App)
-# =====================================================================
-def main():
-    st.set_page_config(page_title="Advanced Manufacturing Planner", layout="wide")
+    f_ini = parse_date(f_ini_val)
+    f_fin = parse_date(f_fin_val)
+    fechas = pd.date_range(f_ini, f_fin)
     
-    st.title("🏭 Planificación Industrial Avanzada & Control de Tejeduría")
-    st.subheader("Sistema de Asignación Semanal (NV2 Core)")
-    st.markdown("---")
+    # Limpieza estandarizada de IDs de máquina
+    df_estado["MAQUINA"] = clean_machine_series(df_estado["MAQUINA"])
+    maquinas_disponibles = df_estado["MAQUINA"].unique().tolist()
     
-    st.sidebar.header("🎛️ Parámetros del Horizonte Semanal")
-    start_date_input = st.sidebar.date_input("Fecha Inicio Plan", datetime(2026, 2, 13))
-    end_date_input = st.sidebar.date_input("Fecha Fin Plan", datetime(2026, 2, 19))
+    # Pipeline del Motor Analítico
+    plan_base = build_plan_base(df_estado, fechas)
+    asignaciones = generar_asignacion_avanzada(df_demanda, fechas, maquinas_disponibles)
+    plan_final = integrar_y_clasificar_plan(plan_base, asignaciones)
     
-    hours_day = st.sidebar.slider("Horas Disponibles por Día", 8.0, 24.0, 24.0, step=0.5)
-    rate_default = st.sidebar.number_input("Rate Producción Default (lbs/día)", value=1000)
+    # Agregación de KPIs
+    maquinas_dia = plan_final.groupby("FECHA")["ACTIVA_DIA"].sum().reset_index(name="MAQS_ACTIVAS")
+    setups_dia = plan_final.groupby("FECHA")["REQUIERE_SETUP"].sum().reset_index(name="SETUPS_REQUERIDOS")
+    kpis_diarios = pd.merge(maquinas_dia, setups_dia, on="FECHA")
     
-    st.sidebar.subheader("⚠️ Penalizaciones por Set-up (Horas)")
-    pen_estilo = st.sidebar.number_input("Cambio de Estilo (Horas)", value=8.0)
-    pen_tejido = st.sidebar.number_input("Cambio de Tejido (Horas)", value=24.0)
-    pen_lote = st.sidebar.number_input("Cambio de Lote (Horas)", value=4.0)
+    # Generar Vista Pivotizada Cruzada
+    pivot_lbs = plan_final.pivot_table(
+        index="MAQUINA", columns="FECHA", values="PLAN_NUEVO_LBS", aggfunc="sum", fill_value=0.0
+    )
     
-    config_params = {
-        "start_date": pd.Timestamp(start_date_input), "end_date": pd.Timestamp(end_date_input),
-        "hours_day": hours_day, "rate_default": rate_default,
-        "pen_estilo": pen_estilo, "pen_tejido": pen_tejido, "pen_lote": pen_lote
-    }
-    
-    uploaded_file = st.file_uploader("Cargar Plantilla de Tejido Semanal (.xlsx)", type=["xlsx"])
-    
-    if uploaded_file is not None:
-        with st.spinner("Procesando datos y optimizando secuencias..."):
-            try:
-                df_plan, df_excedentes, summary_changes = PipelineCoordinator.run_pipeline(uploaded_file, config_params)
-                
-                st.success("✅ ¡Plan de Producción Generado!")
-                
-                tab1, tab2, tab3 = st.tabs(["📊 Detalle de Asignaciones", "📦 Excedentes", "🔄 Cambios de Estilo"])
-                
-                with tab1:
-                    if not df_plan.empty:
-                        st.dataframe(df_plan, use_container_width=True)
-                    else:
-                        st.info("No se generaron asignaciones con la capacidad y fechas seleccionadas.")
-                    
-                with tab2:
-                    df_exc_filtered = df_excedentes[df_excedentes["LBS_PENDIENTES"] > 0]
-                    if not df_exc_filtered.empty:
-                        st.dataframe(df_exc_filtered[["ESTILO_OPTIMO", "TEJIDO", "COLOR", "LBS_PENDIENTES"]], use_container_width=True)
-                    else:
-                        st.success("🎉 ¡Felicidades! Toda la demanda fue asignada al 100%. No hay excedentes.")
-                    
-                with tab3:
-                    summary_df = pd.DataFrame(list(summary_changes.items()), columns=["Máquina", "Cambios Estilo Realizados"])
-                    col1, col2 = st.columns([1, 2])
-                    with col1:
-                        st.dataframe(summary_df, use_container_width=True)
-                    with col2:
-                        st.bar_chart(data=summary_df, x="Máquina", y="Cambios Estilo Realizados")
-                        
-            except Exception as e:
-                st.error(f"❌ Error Estructural al procesar el archivo: {str(e)}")
+    return plan_final, kpis_diarios, pivot_lbs
 
-if __name__ == "__main__":
-    main()
+# ============================================================
+# INTERFAZ DE SUEÑO / STREAMLIT UI
+# ============================================================
+st.title("🧵 Sistema de Planificación Industrial Avanzada — Tejido")
+st.markdown("---")
+
+uploaded_file = st.file_uploader("Suba el archivo de control de operaciones de planta (.xlsx)", type=["xlsx"])
+
+if uploaded_file:
+    try:
+        # Validación de estructura básica de ingesta
+        xls = pd.ExcelFile(uploaded_file)
+        pestanas_requeridas = {"ESTADO_MAQUINA", "DEMANDA", "PARAMETROS"}
+        if not pestanas_requeridas.issubset(set(xls.sheet_names)):
+            st.error(f"Estructura inválida. El archivo debe contener obligatoriamente las pestañas: {pestanas_requeridas}")
+            st.stop()
+            
+        estado = pd.read_excel(xls, "ESTADO_MAQUINA", header=1)
+        demanda = pd.read_excel(xls, "DEMANDA", header=1)
+        params = pd.read_excel(xls, "PARAMETROS", header=1)
+        
+        # Ejecución a través del motor cacheado
+        plan, kpis, pivot = procesar_planificacion(estado, demanda, params)
+        
+        # ============================================================
+        # SECCIÓN DE METRICAS MACRO (BUSINESS INTELLIGENCE)
+        # ============================================================
+        st.subheader("⚙️ Métricas de Rendimiento Operativo del Plan")
+        m1, m2, m3, m4 = st.columns(4)
+        
+        total_lbs = plan["PLAN_NUEVO_LBS"].sum()
+        total_setups = plan["REQUIERE_SETUP"].sum()
+        max_maqs = kpis["MAQS_ACTIVAS"].max()
+        eficiencia_uso = (kpis["MAQS_ACTIVAS"].mean() / len(plan["MAQUINA"].unique())) * 100
+        
+        m1.metric("Libras Planificadas", f"{total_lbs:,.1f} Lbs", help="Carga de tejido total inyectada")
+        m2.metric("Eficiencia de Ocupación Promedio", f"{eficiencia_uso:.1f} %", help="Uso promedio de la capacidad instalada")
+        m3.metric("Picos de Máquinas Activas", f"{max_maqs} Máqs", help="Máxima cantidad de telares operando simultáneamente")
+        m4.metric("Paradas por Set-up", f"{total_setups} Cambios", delta=int(total_setups), delta_color="inverse", help="Veces que se detendrá una máquina a cambiar estilo/lote")
+        
+        # ============================================================
+        # VISUALIZACIÓN DE CUADROS DE MANDO
+        # ============================================================
+        tabs = st.tabs(["📋 Plan de Trabajo Diario", "📊 Matriz de Distribución (Estilo Excel)", "📈 Capacidad e Impacto Operativo"])
+        
+        with tabs[0]:
+            st.dataframe(plan, use_container_width=True, height=400)
+            
+        with tabs[1]:
+            st.dataframe(pivot, use_container_width=True, height=400)
+            
+        with tabs[2]:
+            st.markdown("#### Balance de Carga de Planta por Día")
+            st.line_chart(kpis.set_index("FECHA"))
+            
+        # ============================================================
+        # EXPORTACIÓN DE RESULTADOS ROBUSTA
+        # ============================================================
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            plan.to_excel(writer, index=False, sheet_name="PLAN_DIARIO")
+            kpis.to_excel(writer, index=False, sheet_name="METRICAS_DIARIAS")
+            pivot.to_excel(writer, sheet_name="PIVOT_MATRIZ")
+            
+        st.download_button(
+            label="📥 Descargar Plan Industrial Validado (.xlsx)",
+            data=output.getvalue(),
+            file_name="PLAN_TEJIDO_AVANZADO_VALIDADO.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+    except Exception as e:
+        st.error(f"🚨 Error crítico en el procesamiento de datos de manufactura: {str(e)}")
+        st.info("Verifique que el formato de las columnas de entrada coincida exactamente con las plantillas de ingeniería.")
