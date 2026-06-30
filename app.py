@@ -1,85 +1,87 @@
 import streamlit as st
 import pandas as pd
 import io
-from core.engine import build_plan_base, generar_asignacion_dummy, aplicar_y_clasificar_plan
+from core.engine import ejecutar_motor_planificacion
 
-st.set_page_config(page_title="Plan Tejido v5 PRO", layout="wide")
+st.set_page_config(page_title="Plan Tejido Colab-Streamlit", layout="wide")
 
-def machine(x):
+st.title("🧵 Sistema de Planificación — Tejido (Motor Completo Colab)")
+st.markdown("Cargue el archivo maestro con las pestañas técnicas requeridas para correr la planificación avanzada.")
+
+uploaded_file = st.file_uploader("Suba el archivo de control de operaciones (.xlsx)", type=["xlsx"])
+
+if uploaded_file:
     try:
-        return str(int(float(x))).zfill(4)
-    except:
-        return str(x).strip()
+        xls = pd.ExcelFile(uploaded_file)
+        
+        # Validar Pestañas Críticas Obligatorias
+        pestanas_criticas = {"PARAMETROS", "ESTADO_MAQUINA", "DEMANDA", "COMPAT_MAQUINA", "RATES", "REGLAS"}
+        if not pestanas_criticas.issubset(set(xls.sheet_names)):
+            st.error(f"Estructura inválida. Faltan pestañas críticas del sistema: {pestanas_criticas - set(xls.sheet_names)}")
+            st.stop()
+            
+        # Ingesta técnica de datos emulando el comportamiento Colab (header=1) [cite: 3]
+        params_df = pd.read_excel(xls, "PARAMETROS", header=1)
+        estado_df = pd.read_excel(xls, "ESTADO_MAQUINA", header=1)
+        demanda_df = pd.read_excel(xls, "DEMANDA", header=1)
+        compat_df = pd.read_excel(xls, "COMPAT_MAQUINA", header=1)
+        rates_df = pd.read_excel(xls, "RATES", header=1)
+        reglas_df = pd.read_excel(xls, "REGLAS", header=1)
+        
+        # Ingesta flexible de opcionales [cite: 3]
+        restr_df = pd.read_excel(xls, "RESTRICCIONES", header=1) if "RESTRICCIONES" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","ESTILO","TITULAR","TEJIDO","LOTE_HILO","PERMITIR","MOTIVO"])
+        cal_df = pd.read_excel(xls, "CALENDARIO_MAQUINA", header=1) if "CALENDARIO_MAQUINA" in xls.sheet_names else pd.DataFrame(columns=["MAQUINA","FECHA_INICIO","FECHA_FIN","TIPO","HORAS_DISPONIBLES"])
 
-def parse_date(x):
-    return pd.to_datetime(x, errors="coerce").normalize()
+        # Ejecución del Algoritmo del Motor
+        with st.spinner("Ejecutando asignaciones y resolviendo restricciones por fases..."):
+            plan_final = ejecutar_motor_planificacion(
+                params_df, estado_df, demanda_df, compat_df, rates_df, reglas_df, restr_df, cal_df
+            )
+        
+        # --- SECCIÓN DE KPIS MÁXIMOS ---
+        st.subheader("⚙️ Métricas Generales Operativas")
+        m1, m2, m3, m4 = st.columns(4)
+        
+        total_lbs = plan_final["PLAN_NUEVO_LBS"].sum()
+        maqs_activas_prom = plan_final.groupby("FECHA")["ACTIVA_DIA"].sum().mean()
+        total_horas_setup = plan_final["HORAS_SETUP"].sum()
+        dias_totales = len(plan_final["FECHA"].unique())
+        
+        m1.metric("Libras Planificadas", f"{total_lbs:,.1f} Lbs")
+        m2.metric("Promedio Máquinas Activas", f"{maqs_activas_prom:.1f} Máqs")
+        m3.metric("Horas Invertidas en Setup", f"{total_horas_setup:,.1f} Hrs")
+        m4.metric("Días de Cobertura", f"{dias_totales} Días")
 
-st.title("🧵 Plan Tejido v5 PRO (Estable & Optimizado)")
+        # --- NAVEGACIÓN Y VISUALIZACIONES ---
+        tabs = st.tabs(["📋 Plan de Trabajo Diario", "📊 Matriz de Cargas por Máquina", "📈 Resumen de Ocupación"])
+        
+        with tabs[0]:
+            st.dataframe(plan_final, use_container_width=True, height=450)
+            
+        with tabs[1]:
+            pivot_lbs = plan_final.pivot_table(
+                index="MAQUINA", columns="FECHA", values="PLAN_NUEVO_LBS", aggfunc="sum", fill_value=0.0
+            )
+            st.dataframe(pivot_lbs, use_container_width=True, height=450)
+            
+        with tabs[2]:
+            maquinas_dia = plan_final.groupby("FECHA")["ACTIVA_DIA"].sum().reset_index(name="MAQUINAS_ACTIVAS")
+            st.line_chart(maquinas_dia.set_index("FECHA"))
 
-uploaded = st.file_uploader("Sube archivo Excel", type=["xlsx"])
-
-if uploaded:
-    try:
-        xls = pd.ExcelFile(uploaded)
-        
-        # Ingesta flexible de datos
-        estado = pd.read_excel(xls, "ESTADO_MAQUINA", header=1)
-        demanda = pd.read_excel(xls, "DEMANDA", header=1)
-        params = pd.read_excel(xls, "PARAMETROS", header=1)
-        
-        f_ini = parse_date(params.loc[params["Campo"]=="Fecha_inicio_plan","Valor"].values[0])
-        f_fin = parse_date(params.loc[params["Campo"]=="Fecha_fin_plan","Valor"].values[0])
-        fechas = pd.date_range(f_ini, f_fin)
-        
-        maquinas = estado["MAQUINA"].apply(machine).unique().tolist()
-        
-        # --- PROCESAMIENTO MEDIANTE EL MOTOR ---
-        plan = build_plan_base(estado, fechas)
-        asign = generar_asignacion_dummy(demanda, fechas, maquinas)
-        plan = aplicar_y_clasificar_plan(plan, asign)
-        
-        # KPIs Diarios
-        maquinas_dia = (
-            plan.groupby("FECHA")["ACTIVA_DIA"]
-            .sum()
-            .reset_index(name="MAQS_ACTIVAS")
-        )
-        
-        # --- RENDERIZADO DE INTERFAZ ---
-        st.subheader("📋 Plan Detallado")
-        st.dataframe(
-            plan.sort_values(["MAQUINA", "FECHA"]),
-            use_container_width=True,
-            height=450
-        )
-        
-        st.subheader("📊 Máquinas Activas (REAL)")
-        st.dataframe(maquinas_dia)
-        
-        # Tabla Pivotizada (Formato Grid Excel)
-        pivot = plan.pivot_table(
-            index="MAQUINA",
-            columns="FECHA",
-            values="PLAN_NUEVO_LBS",
-            aggfunc="sum",
-            fill_value=0
-        )
-        st.subheader("📊 Vista tipo Excel")
-        st.dataframe(pivot)
-        
-        # --- DESCARGA CONSOLIDADA ---
+        # --- EXPORTADOR EXCEL CON MULTIPESTAÑAS ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            plan.to_excel(writer, index=False, sheet_name="PLAN_DIARIO")
-            maquinas_dia.to_excel(writer, index=False, sheet_name="MAQ_DIA")
-            pivot.to_excel(writer, sheet_name="PIVOT")
+            plan_final.to_excel(writer, index=False, sheet_name="PLAN_DIARIO")
+            pivot_lbs.to_excel(writer, sheet_name="MATRIZ_PIVOTADA")
+            maquinas_dia.to_excel(writer, index=False, sheet_name="KPI_MAQUINAS_DIA")
             
         st.download_button(
-            "📥 Descargar Excel",
+            label="📥 Descargar Plan Técnico Validado (.xlsx)",
             data=output.getvalue(),
-            file_name="PLAN_TEJIDO_PRO_FINAL.xlsx",
+            file_name="PLAN_TEJIDO_COLAB_PRO.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        
+
     except Exception as e:
-        st.error(f"🚨 Error de procesamiento en la estructura de manufactura: {str(e)}")
+        st.error(f"🚨 Error crítico en el procesamiento del motor de tejido: {str(e)}")
+        st.info("Asegúrese de que las columnas tengan los mismos nombres que su cuaderno original de Colab.")
