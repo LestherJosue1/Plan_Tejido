@@ -1,101 +1,85 @@
+import streamlit as st
 import pandas as pd
-import numpy as np
+import io
+from core.engine import build_plan_base, generar_asignacion_dummy, aplicar_y_clasificar_plan
 
-def build_plan_base(estado_maquina: pd.DataFrame, fechas: pd.DatetimeIndex) -> pd.DataFrame:
-    """Genera la matriz base Máquina x Fecha emulando la tolerancia del código original."""
-    # Limpieza estándar de identificadores de máquina
-    estado_maquina["MAQUINA"] = estado_maquina["MAQUINA"].astype(str).str.strip()
-    
-    # Tolerancia a variaciones de nombres usando .get() conceptualmente o asignación masiva segura
-    estilo_col = "ESTILO_REAL" if "ESTILO_REAL" in estado_maquina.columns else "ESTILO"
-    lote_col = "LOTE_HILO" if "LOTE_HILO" in estado_maquina.columns else "LOTE"
-    
-    records = []
-    # Mantenemos una construcción limpia pero estructurada
-    for _, r in estado_maquina.iterrows():
-        maq = str(r["MAQUINA"]).strip()
-        # Tratamiento tolerante idéntico al .get() original
-        estilo = str(r.get(estilo_col, "")).strip()
-        lote = str(r.get(lote_col, "")).strip()
+st.set_page_config(page_title="Plan Tejido v5 PRO", layout="wide")
+
+def machine(x):
+    try:
+        return str(int(float(x))).zfill(4)
+    except:
+        return str(x).strip()
+
+def parse_date(x):
+    return pd.to_datetime(x, errors="coerce").normalize()
+
+st.title("🧵 Plan Tejido v5 PRO (Estable & Optimizado)")
+
+uploaded = st.file_uploader("Sube archivo Excel", type=["xlsx"])
+
+if uploaded:
+    try:
+        xls = pd.ExcelFile(uploaded)
         
-        for i, d in enumerate(fechas):
-            records.append({
-                "MAQUINA": maq,
-                "FECHA": d,
-                "PLAN_ANTERIOR_ESTILO": estilo if i == 0 else "",
-                "PLAN_ANTERIOR_LOTE": lote if i == 0 else "",
-                "ESTILO_NUEVO": "",
-                "LOTE_NUEVO": "",
-                "PLAN_NUEVO_LBS": 0.0
-            })
+        # Ingesta flexible de datos
+        estado = pd.read_excel(xls, "ESTADO_MAQUINA", header=1)
+        demanda = pd.read_excel(xls, "DEMANDA", header=1)
+        params = pd.read_excel(xls, "PARAMETROS", header=1)
+        
+        f_ini = parse_date(params.loc[params["Campo"]=="Fecha_inicio_plan","Valor"].values[0])
+        f_fin = parse_date(params.loc[params["Campo"]=="Fecha_fin_plan","Valor"].values[0])
+        fechas = pd.date_range(f_ini, f_fin)
+        
+        maquinas = estado["MAQUINA"].apply(machine).unique().tolist()
+        
+        # --- PROCESAMIENTO MEDIANTE EL MOTOR ---
+        plan = build_plan_base(estado, fechas)
+        asign = generar_asignacion_dummy(demanda, fechas, maquinas)
+        plan = aplicar_y_clasificar_plan(plan, asign)
+        
+        # KPIs Diarios
+        maquinas_dia = (
+            plan.groupby("FECHA")["ACTIVA_DIA"]
+            .sum()
+            .reset_index(name="MAQS_ACTIVAS")
+        )
+        
+        # --- RENDERIZADO DE INTERFAZ ---
+        st.subheader("📋 Plan Detallado")
+        st.dataframe(
+            plan.sort_values(["MAQUINA", "FECHA"]),
+            use_container_width=True,
+            height=450
+        )
+        
+        st.subheader("📊 Máquinas Activas (REAL)")
+        st.dataframe(maquinas_dia)
+        
+        # Tabla Pivotizada (Formato Grid Excel)
+        pivot = plan.pivot_table(
+            index="MAQUINA",
+            columns="FECHA",
+            values="PLAN_NUEVO_LBS",
+            aggfunc="sum",
+            fill_value=0
+        )
+        st.subheader("📊 Vista tipo Excel")
+        st.dataframe(pivot)
+        
+        # --- DESCARGA CONSOLIDADA ---
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            plan.to_excel(writer, index=False, sheet_name="PLAN_DIARIO")
+            maquinas_dia.to_excel(writer, index=False, sheet_name="MAQ_DIA")
+            pivot.to_excel(writer, sheet_name="PIVOT")
             
-    return pd.DataFrame(records)
-
-
-def generar_asignacion_dummy(demanda: pd.DataFrame, fechas: pd.DatetimeIndex, maquinas: list) -> pd.DataFrame:
-    """Motor de asignación respetando la lógica exacta del código original sin límites duros."""
-    asignaciones = []
-    # Eliminamos el corte estático [:235] para procesar dinámicamente todo el parque de máquinas disponible
-    for _, d in demanda.iterrows():
-        lbs = d.get("LBS_PENDIENTES", 0)
+        st.download_button(
+            "📥 Descargar Excel",
+            data=output.getvalue(),
+            file_name="PLAN_TEJIDO_PRO_FINAL.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
         
-        for f in fechas:
-            for m in maquinas:
-                if lbs <= 0:
-                    break
-                    
-                prod = min(500, lbs)
-                asignaciones.append({
-                    "MAQUINA": m,
-                    "FECHA": f,
-                    "LBS": prod,
-                    "ESTILO": d.get("ESTILO_OPTIMO", ""),
-                    "LOTE": d.get("LOTE_HILO", "")
-                })
-                lbs -= prod
-                
-    return pd.DataFrame(asignaciones) if asignaciones else pd.DataFrame(columns=["MAQUINA", "FECHA", "LBS", "ESTILO", "LOTE"])
-
-
-def aplicar_y_clasificar_plan(plan_df: pd.DataFrame, asignaciones: pd.DataFrame) -> pd.DataFrame:
-    """Consolida las asignaciones y calcula estados/continuidades de forma optimizada."""
-    if not asignaciones.empty:
-        # Agrupación de control por día y telar
-        asig_grouped = asignaciones.groupby(["MAQUINA", "FECHA"], as_index=False).agg({
-            "LBS": "sum",
-            "ESTILO": "first",
-            "LOTE": "first"
-        })
-        
-        plan_df = plan_df.merge(asig_grouped, on=["MAQUINA", "FECHA"], how="left")
-        plan_df["PLAN_NUEVO_LBS"] = plan_df["LBS"].fillna(0.0)
-        plan_df["ESTILO_NUEVO"] = plan_df["ESTILO"].fillna("").str.strip()
-        plan_df["LOTE_NUEVO"] = plan_df["LOTE"].fillna("").str.strip()
-        plan_df.drop(columns=["LBS", "ESTILO", "LOTE"], inplace=True)
-
-    plan_df = plan_df.sort_values(["MAQUINA", "FECHA"]).reset_index(drop=True)
-    
-    # --- CÁLCULO DE CONTINUIDAD (Optimizado y alineado al comportamiento v5) ---
-    plan_df["ESTILO_ACTIVO"] = np.where(plan_df["PLAN_NUEVO_LBS"] > 0, plan_df["ESTILO_NUEVO"], plan_df["PLAN_ANTERIOR_ESTILO"])
-    plan_df["ESTILO_ANTERIOR"] = plan_df.groupby("MAQUINA")["ESTILO_ACTIVO"].shift(1).fillna("")
-    
-    # Regla de negocio combinada
-    plan_df["CONTINUIDAD"] = np.where(
-        plan_df["PLAN_NUEVO_LBS"] > 0,
-        (plan_df["ESTILO_NUEVO"] == plan_df["ESTILO_ANTERIOR"]) & (plan_df["ESTILO_NUEVO"] != ""),
-        (plan_df["PLAN_ANTERIOR_ESTILO"].str.strip() != "")
-    )
-    
-    # Clasificación de tipo de día
-    condiciones = [
-        (plan_df["PLAN_NUEVO_LBS"] > 0),
-        (plan_df["PLAN_ANTERIOR_ESTILO"].astype(str).str.strip() != "")
-    ]
-    elecciones = ["🟢 PRODUCCION", "🔵 CONTINUIDAD"]
-    plan_df["TIPO_DIA"] = np.select(condiciones, elecciones, default="⚪ OCIOSO")
-    
-    # Indicador binario de máquina activa
-    plan_df["ACTIVA_DIA"] = np.where(plan_df["TIPO_DIA"].isin(["🟢 PRODUCCION", "🔵 CONTINUIDAD"]), 1, 0)
-    
-    plan_df.drop(columns=["ESTILO_ACTIVO", "ESTILO_ANTERIOR"], inplace=True)
-    return plan_df
+    except Exception as e:
+        st.error(f"🚨 Error de procesamiento en la estructura de manufactura: {str(e)}")
